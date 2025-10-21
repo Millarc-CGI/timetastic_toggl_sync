@@ -1,1 +1,0 @@
-# timetastic_toggl_sync
