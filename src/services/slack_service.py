@@ -1,0 +1,267 @@
+"""
+Slack API service for notifications and messaging.
+"""
+
+from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
+from typing import List, Dict, Any, Optional
+from datetime import datetime, date
+
+from ..config import Settings
+
+
+class SlackService:
+    """Service for interacting with Slack API."""
+    
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.client = WebClient(token=settings.slack_bot_token)
+        self.bot_name = settings.slack_default_sender_name
+        self.fallback_channel = settings.slack_dm_fallback_channel
+    
+    def test_connection(self) -> bool:
+        """Test connection to Slack API."""
+        try:
+            response = self.client.auth_test()
+            return response.get('ok', False)
+        except SlackApiError:
+            return False
+    
+    def get_user_info(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Get user information by Slack user ID."""
+        try:
+            response = self.client.users_info(user=user_id)
+            return response.get('user')
+        except SlackApiError:
+            return None
+    
+    def get_users(self) -> List[Dict[str, Any]]:
+        """Get list of all users in the workspace."""
+        try:
+            response = self.client.users_list()
+            return response.get('members', [])
+        except SlackApiError:
+            return []
+    
+    def find_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        """Find user by email address."""
+        try:
+            users = self.get_users()
+            for user in users:
+                profile = user.get('profile', {})
+                if profile.get('email', '').lower() == email.lower():
+                    return user
+            return None
+        except Exception:
+            return None
+    
+    def send_dm(self, user_id: str, message: str, blocks: Optional[List[Dict[str, Any]]] = None) -> bool:
+        """Send direct message to user."""
+        try:
+            response = self.client.chat_postMessage(
+                channel=user_id,
+                text=message,
+                username=self.bot_name,
+                blocks=blocks
+            )
+            return response.get('ok', False)
+        except SlackApiError as e:
+            print(f"Failed to send DM to {user_id}: {e}")
+            return False
+    
+    def send_channel_message(self, channel: str, message: str, blocks: Optional[List[Dict[str, Any]]] = None) -> bool:
+        """Send message to channel."""
+        try:
+            response = self.client.chat_postMessage(
+                channel=channel,
+                text=message,
+                username=self.bot_name,
+                blocks=blocks
+            )
+            return response.get('ok', False)
+        except SlackApiError as e:
+            print(f"Failed to send message to {channel}: {e}")
+            return False
+    
+    def send_missing_entries_reminder(
+        self, 
+        user_email: str, 
+        missing_days: List[date],
+        days_to_check: int = 7
+    ) -> bool:
+        """Send reminder about missing time entries."""
+        user = self.find_user_by_email(user_email)
+        if not user:
+            print(f"Slack user not found for email: {user_email}")
+            return False
+        
+        user_id = user['id']
+        display_name = user.get('profile', {}).get('display_name', user_email)
+        
+        if not missing_days:
+            return True  # No missing entries
+        
+        # Create message
+        missing_dates_str = "\n".join([f"• {day.strftime('%Y-%m-%d (%A)')}" for day in missing_days])
+        
+        message = f"""⏰ *Missing Time Entries Reminder*
+
+Hi {display_name}! 
+
+I noticed you haven't logged time entries for the following days in the last {days_to_check} days:
+
+{missing_dates_str}
+
+Please log your time entries in Toggl Track to ensure accurate reporting.
+
+Need help? Contact your administrator or check the Toggl Track documentation.
+
+---
+*This is an automated message from {self.bot_name}*"""
+        
+        return self.send_dm(user_id, message)
+    
+    def send_monthly_report(self, user_email: str, report_data: Dict[str, Any]) -> bool:
+        """Send monthly report to user."""
+        user = self.find_user_by_email(user_email)
+        if not user:
+            print(f"Slack user not found for email: {user_email}")
+            return False
+        
+        user_id = user['id']
+        display_name = user.get('profile', {}).get('display_name', user_email)
+        
+        # Create message
+        period = report_data.get('period', 'Unknown')
+        total_hours = report_data.get('total_hours', 0)
+        overtime_hours = report_data.get('overtime_hours', 0)
+        vacation_days = report_data.get('vacation_days', 0)
+        sick_days = report_data.get('sick_days', 0)
+        
+        message = f"""📊 *Monthly Time Report - {period}*
+
+Hi {display_name}!
+
+Here's your time tracking summary for {period}:
+
+⏰ *Hours Worked*
+• Total Hours: {total_hours:.1f}h
+• Overtime: {overtime_hours:.1f}h
+
+🏖️ *Time Off*
+• Vacation Days: {vacation_days}
+• Sick Days: {sick_days}
+
+"""
+        
+        # Add project breakdown if available
+        project_hours = report_data.get('project_hours', {})
+        if project_hours:
+            message += "📁 *Project Breakdown*\n"
+            for project, hours in project_hours.items():
+                message += f"• {project}: {hours:.1f}h\n"
+        
+        message += f"\n---\n*Generated on {datetime.now().strftime('%Y-%m-%d %H:%M')}*\n*This is an automated message from {self.bot_name}*"
+        
+        return self.send_dm(user_id, message)
+    
+    def send_admin_notification(
+        self, 
+        message: str, 
+        include_admins: Optional[List[str]] = None
+    ) -> bool:
+        """Send notification to admins."""
+        if not include_admins:
+            # Get admin emails from config
+            admin_emails = self.settings.admin_emails
+        else:
+            admin_emails = include_admins
+        
+        if not admin_emails:
+            return False
+        
+        success = True
+        for email in admin_emails:
+            user = self.find_user_by_email(email)
+            if user:
+                user_id = user['id']
+                if not self.send_dm(user_id, f"🔔 *Admin Notification*\n\n{message}"):
+                    success = False
+            else:
+                print(f"Admin user not found in Slack: {email}")
+                success = False
+        
+        return success
+    
+    def send_producer_notification(
+        self, 
+        message: str, 
+        include_producers: Optional[List[str]] = None
+    ) -> bool:
+        """Send notification to producers."""
+        if not include_producers:
+            # Get producer emails from config
+            producer_emails = self.settings.producer_emails
+        else:
+            producer_emails = include_producers
+        
+        if not producer_emails:
+            return False
+        
+        success = True
+        for email in producer_emails:
+            user = self.find_user_by_email(email)
+            if user:
+                user_id = user['id']
+                if not self.send_dm(user_id, f"📈 *Producer Update*\n\n{message}"):
+                    success = False
+            else:
+                print(f"Producer user not found in Slack: {email}")
+                success = False
+        
+        return success
+    
+    def send_sync_completion_notification(
+        self, 
+        sync_stats: Dict[str, Any],
+        errors: Optional[List[str]] = None
+    ) -> bool:
+        """Send notification about sync completion."""
+        message = f"""🔄 *Sync Completed*
+
+*Statistics:*
+• Toggl entries processed: {sync_stats.get('toggl_entries', 0)}
+• Timetastic absences processed: {sync_stats.get('timetastic_absences', 0)}
+• Users synchronized: {sync_stats.get('users_synced', 0)}
+• Reports generated: {sync_stats.get('reports_generated', 0)}
+
+"""
+        
+        if errors:
+            message += f"⚠️ *Errors encountered:* {len(errors)}\n"
+            for error in errors[:3]:  # Show first 3 errors
+                message += f"• {error}\n"
+            if len(errors) > 3:
+                message += f"• ... and {len(errors) - 3} more errors\n"
+        
+        message += f"\n*Completed at:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        
+        return self.send_admin_notification(message)
+    
+    def send_test_message(self, user_id: str, custom_message: Optional[str] = None) -> bool:
+        """Send test message to verify Slack integration."""
+        user_info = self.get_user_info(user_id)
+        if not user_info:
+            return False
+        
+        display_name = user_info.get('profile', {}).get('display_name', 'Unknown')
+        
+        message = custom_message or f"""🧪 *Test Message*
+
+Hello {display_name}! This is a test message from {self.bot_name}.
+
+If you're receiving this message, the Slack integration is working correctly.
+
+*Test completed at:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
+        
+        return self.send_dm(user_id, message)

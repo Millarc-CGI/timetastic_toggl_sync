@@ -1,0 +1,29 @@
+# Core dependencies
+click==8.1.7
+python-dotenv==1.0.1
+requests==2.32.3
+
+# Slack integration
+slack-sdk==3.23.0
+
+# Data processing and exports
+tabulate==0.9.0
+openpyxl==3.1.2
+
+# Date/time handling (already in Python standard library)
+# datetime, date, timedelta
+
+# JSON handling (already in Python standard library)
+# json
+
+# CSV handling (already in Python standard library)
+# csv
+
+# SQLite (already in Python standard library)
+# sqlite3
+
+# Path handling (already in Python standard library)
+# pathlib
+
+# Type hints (already in Python standard library)
+# typing
