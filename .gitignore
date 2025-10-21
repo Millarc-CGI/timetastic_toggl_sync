@@ -19,3 +19,6 @@ exports/
 
 # Secrets
 .env
+
+# Test files
+tests/
