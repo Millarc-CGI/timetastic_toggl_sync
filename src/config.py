@@ -41,6 +41,7 @@ def _parse_json(s: str, default: Any = None) -> Any:
 class Settings:
     # API Configuration
     toggl_base_url: str
+    toggl_reports_base_url: str
     toggl_api_token: str
     timetastic_base_url: str
     timetastic_api_token: str
@@ -91,6 +92,7 @@ class Settings:
     slack_test_email: Optional[str]
     toggl_test_start_date: Optional[str]
     toggl_test_end_date: Optional[str]
+    toggl_test_user_id: Optional[str]
     timetastic_test_start_date: Optional[str]
     timetastic_test_end_date: Optional[str]
     timetastic_test_user_id: Optional[str]
@@ -110,6 +112,7 @@ def load_settings() -> Settings:
     return Settings(
         # API Configuration
         toggl_base_url=os.getenv("TOGGL_BASE_URL", "https://api.track.toggl.com/api/v9"),
+        toggl_reports_base_url=os.getenv("TOGGL_REPORTS_BASE_URL", "https://api.track.toggl.com/reports/api/v3"),
         toggl_api_token=os.getenv("TOGGL_API_TOKEN", "").strip(),
         timetastic_base_url=os.getenv("TIMETASTIC_BASE_URL", "https://app.timetastic.co.uk/api"),
         timetastic_api_token=os.getenv("TIMETASTIC_API_TOKEN", "").strip(),
@@ -160,6 +163,7 @@ def load_settings() -> Settings:
         slack_test_email=(os.getenv("SLACK_TEST_EMAIL", "").strip() or None),
         toggl_test_start_date=(os.getenv("TOGGL_TEST_START_DATE", "").strip() or None),
         toggl_test_end_date=(os.getenv("TOGGL_TEST_END_DATE", "").strip() or None),
+        toggl_test_user_id=(os.getenv("TOGGL_TEST_USER_ID", "").strip() or None),
         timetastic_test_start_date=(os.getenv("TIMETASTIC_TEST_START_DATE", "").strip() or None),
         timetastic_test_end_date=(os.getenv("TIMETASTIC_TEST_END_DATE", "").strip() or None),
         timetastic_test_user_id=(os.getenv("TIMETASTIC_TEST_USER_ID", "").strip() or None),

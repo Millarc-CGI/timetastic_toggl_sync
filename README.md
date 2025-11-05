@@ -20,30 +20,30 @@ src/
 ├── config.py              # Configuration management
 ├── cli.py                 # Command-line interface
 ├── models/                # Data models
-│   ├── user.py           # User mappings across services
-│   ├── time_entry.py     # Toggl time entries
-│   ├── absence.py        # Timetastic absences
-│   └── report.py         # Report data structures
+│   ├── user.py            # User mappings across services
+│   ├── time_entry.py      # Toggl time entries
+│   ├── absence.py         # Timetastic absences
+│   └── report.py          # Report data structures
 ├── services/              # External API integrations
-│   ├── toggl_service.py  # Toggl Track API
+│   ├── toggl_service.py   # Toggl Track API
 │   ├── timetastic_service.py # Timetastic API
-│   ├── slack_service.py  # Slack notifications
-│   └── user_service.py   # User management
+│   ├── slack_service.py   # Slack notifications
+│   └── user_service.py    # User management
 ├── storage/               # Data persistence
-│   ├── sqlite_storage.py # SQLite database operations
-│   └── file_storage.py   # CSV/JSON exports
+│   ├── sqlite_storage.py  # SQLite database operations
+│   └── file_storage.py    # CSV/JSON exports
 ├── logic/                 # Business logic
 │   ├── data_aggregator.py # Data merging and processing
 │   ├── overtime_calculator.py # Overtime calculations
 │   ├── statistics_generator.py # Analytics generation
-│   └── report_generator.py # Report creation
+│   ├── report_generator.py # Report creation
+│   └── date_ranges.py     # Timezone-aware date helpers
 ├── access_control/        # Role-based permissions
-│   └── permissions.py    # Access control logic
-└── tests/                 # API connection tests
-    ├── slack_test.py     # Slack integration tests
-    ├── toggl_test.py     # Toggl API tests
-    └── timetastic_test.py # Timetastic API tests
+│   └── permissions.py     # Access control logic
 ```
+
+> Local API smoke tests live under `src/tests/` for developer use only and are not part of the packaged architecture.
+
 
 ## 🚀 Features
 
