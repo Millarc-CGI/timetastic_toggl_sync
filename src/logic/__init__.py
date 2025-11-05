@@ -9,10 +9,20 @@ from .data_aggregator import DataAggregator
 from .overtime_calculator import OvertimeCalculator
 from .statistics_generator import StatisticsGenerator
 from .report_generator import ReportGenerator
+from .date_ranges import (
+    last_week_range,
+    last_month_range,
+    current_week_range,
+    current_month_to_date_range,
+)
 
 __all__ = [
     'DataAggregator',
     'OvertimeCalculator',
     'StatisticsGenerator',
-    'ReportGenerator'
+    'ReportGenerator',
+    'last_week_range',
+    'last_month_range',
+    'current_week_range',
+    'current_month_to_date_range',
 ]
