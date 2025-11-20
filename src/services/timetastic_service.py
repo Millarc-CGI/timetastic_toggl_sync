@@ -17,6 +17,10 @@ class TimetasticService:
         self.settings = settings
         self.base_url = settings.timetastic_base_url
         self.token = settings.timetastic_api_token
+        self._holidays_cache: Dict[str, List[Dict[str, Any]]] = {}
+        self._users_cache: Optional[List[Dict[str, Any]]] = None
+        self._leave_types_cache: Optional[List[Dict[str, Any]]] = None
+        self._departments_cache: Optional[List[Dict[str, Any]]] = None
     
     def _auth_header(self) -> Dict[str, str]:
         """Generate Timetastic API authentication header."""
@@ -50,6 +54,9 @@ class TimetasticService:
     
     def get_users(self) -> List[Dict[str, Any]]:
         """Get list of all users in the organization."""
+        if self._users_cache is not None:
+            return self._users_cache
+        
         users = []
         page = 1
         
@@ -74,6 +81,7 @@ class TimetasticService:
             
             page += 1
         
+        self._users_cache = users
         return users
     
     def get_user(self, user_id: int) -> Dict[str, Any]:
@@ -113,56 +121,100 @@ class TimetasticService:
             "End": end_date,
             "Status": status
         }
+        cache_key = f"{start_date}|{end_date}|{status}"
         
-        if user_ids:
-            params["UsersIds"] = ",".join(str(x) for x in user_ids)
+        cached = self._holidays_cache.get(cache_key)
+        if cached is not None:
+            raw_holidays = cached
+        else:
+            # Fetch holidays with pagination
+            raw_holidays = []
+            page = 1
+            
+            while True:
+                params_with_page = {**params, "PageNumber": page}
+                data = self._make_request("/holidays", params=params_with_page)
+                
+                # Handle different response formats
+                if isinstance(data, list):
+                    holidays = data
+                else:
+                    holidays = data.get("holidays", []) or data.get("items", [])
+                
+                if not holidays:
+                    break
+                
+                raw_holidays.extend(holidays)
+                
+                # If we got fewer holidays than requested, we're done
+                if len(holidays) < 100:
+                    break
+                
+                page += 1
+            
+            self._holidays_cache[cache_key] = raw_holidays
         
-        # Fetch holidays with pagination
-        all_holidays = []
-        page = 1
-        
-        while True:
-            params["PageNumber"] = page
-            data = self._make_request("/holidays", params=params)
-            
-            # Handle different response formats
-            if isinstance(data, list):
-                holidays = data
-            else:
-                holidays = data.get("holidays", []) or data.get("items", [])
-            
-            if not holidays:
-                break
-            
-            all_holidays.extend(holidays)
-            
-            # If we got fewer holidays than requested, we're done
-            if len(holidays) < 100:
-                break
-            
-            page += 1
+        filtered_holidays = self._filter_holidays_by_users(raw_holidays, user_ids)
         
         # Convert to Absence objects
         absences = []
-        for holiday_data in all_holidays:
+        for holiday_data in filtered_holidays:
             try:
                 absence = Absence.from_timetastic_data(holiday_data)
+                leave_type = holiday_data.get("leaveType") or holiday_data.get("type") or "Unknown"
+                if isinstance(leave_type, dict):
+                    leave_type = leave_type.get("name") or leave_type.get("Name") or "Unknown"
                 absences.append(absence)
             except Exception as e:
                 print(f"Warning: Failed to parse holiday {holiday_data.get('id', 'unknown')}: {e}")
                 continue
         
         return absences
+
+    def _filter_holidays_by_users(
+        self,
+        holidays: List[Dict[str, Any]],
+        user_ids: Optional[List[int]],
+    ) -> List[Dict[str, Any]]:
+        """Apply user filtering locally when API cannot handle the filter."""
+        if not user_ids:
+            return holidays
+        
+        requested_ids = {int(uid) for uid in user_ids}
+        filtered: List[Dict[str, Any]] = []
+        
+        for entry in holidays:
+            uid = (
+                entry.get("userId")
+                or entry.get("UserId")
+                or (entry.get("user") or {}).get("id")
+                or (entry.get("user") or {}).get("Id")
+            )
+            try:
+                uid_int = int(uid) if uid is not None else None
+            except (TypeError, ValueError):
+                uid_int = None
+            
+            if uid_int in requested_ids:
+                filtered.append(entry)
+        
+        return filtered
     
     def get_leave_types(self) -> List[Dict[str, Any]]:
         """Get list of available leave types."""
+        if self._leave_types_cache is not None:
+            return self._leave_types_cache
+
         data = self._make_request("/holidaytypes")
         
         # Handle different response formats
         if isinstance(data, list):
+            self._leave_types_cache = data
             return data
         else:
-            return data.get("holidayTypes", []) or data.get("items", [])
+            items = data.get("holidayTypes", []) or data.get("items", [])
+            self._leave_types_cache = items
+            return items
     
     def get_user_holidays(
         self,
@@ -177,13 +229,18 @@ class TimetasticService:
     def get_departments(self) -> List[Dict[str, Any]]:
         """Get list of departments."""
         try:
+            if self._departments_cache is not None:
+                return self._departments_cache
             data = self._make_request("/departments")
             
             # Handle different response formats
             if isinstance(data, list):
+                self._departments_cache = data
                 return data
             else:
-                return data.get("departments", []) or data.get("items", [])
+                items = data.get("departments", []) or data.get("items", [])
+                self._departments_cache = items
+                return items
         except Exception:
             return []
     
