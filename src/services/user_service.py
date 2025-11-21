@@ -2,7 +2,7 @@
 User service for managing user mappings and synchronization.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from datetime import datetime
 
 from ..config import Settings
@@ -51,23 +51,34 @@ class UserService:
         # Create user mappings
         user_mappings = {}
         
+        active_timetastic_emails = self._collect_active_timetastic_emails(timetastic_users)
+
         # Process each service's users
-        self._process_toggl_users(toggl_users, user_mappings)
+        self._process_toggl_users(toggl_users, user_mappings, active_timetastic_emails)
         self._process_timetastic_users(timetastic_users, user_mappings)
-        self._process_slack_users(slack_users, user_mappings)
+        self._process_slack_users(slack_users, user_mappings, active_timetastic_emails)
         
         # Convert to User objects
         users = []
         for email, mapping in user_mappings.items():
+            department = mapping.get('department')
+            department_normalized = (department or '').strip().lower()
+
             user = User(
                 email=email,
                 toggl_user_id=mapping.get('toggl_id'),
                 timetastic_user_id=mapping.get('timetastic_id'),
                 slack_user_id=mapping.get('slack_id'),
                 full_name=mapping.get('full_name', ''),
-                department=mapping.get('department'),
-                is_admin=email.lower() in self.settings.admin_emails,
-                is_producer=email.lower() in self.settings.producer_emails,
+                department=department,
+                is_admin=(
+                    department_normalized == 'administracja'
+                    or email.lower() in self.settings.admin_emails
+                ),
+                is_producer=(
+                    department_normalized == 'production'
+                    or email.lower() in self.settings.producer_emails
+                ),
                 # overtime_rules removed - will be implemented in overtime_calculator.py
             )
             users.append(user)
@@ -75,11 +86,20 @@ class UserService:
         print(f"✅ Created {len(users)} user mappings")
         return users
     
-    def _process_toggl_users(self, toggl_users: List[Dict[str, Any]], user_mappings: Dict[str, Dict[str, Any]]):
+    def _process_toggl_users(
+        self,
+        toggl_users: List[Dict[str, Any]],
+        user_mappings: Dict[str, Dict[str, Any]],
+        active_timetastic_emails: Set[str],
+    ):
         """Process Toggl users and add to mappings."""
         for user in toggl_users:
             email = user.get('email', '').lower()
             if not email:
+                continue
+            if not user.get('is_active', False):
+                continue
+            if active_timetastic_emails and email not in active_timetastic_emails:
                 continue
             
             if email not in user_mappings:
@@ -87,10 +107,12 @@ class UserService:
             
             user_mappings[email]['toggl_id'] = user.get('id')
             user_mappings[email]['full_name'] = user.get('fullname', '')
-    
+
     def _process_timetastic_users(self, timetastic_users: List[Dict[str, Any]], user_mappings: Dict[str, Dict[str, Any]]):
         """Process Timetastic users and add to mappings."""
         for user in timetastic_users:
+            if not self._is_timetastic_user_active(user):
+                continue
             email = user.get('email') or user.get('Email', '')
             if not email:
                 continue
@@ -111,19 +133,30 @@ class UserService:
             
             # Add department info
             department = user.get('department', {})
-            if isinstance(department, dict):
-                dept_name = department.get('name') or department.get('Name')
-                if dept_name:
-                    user_mappings[email]['department'] = dept_name
-            elif isinstance(department, str):
-                user_mappings[email]['department'] = department
-    
-    def _process_slack_users(self, slack_users: List[Dict[str, Any]], user_mappings: Dict[str, Dict[str, Any]]):
+            department_name = (
+                user.get('departmentName')
+                or user.get('department_name')
+                or (department.get('name') if isinstance(department, dict) else None)
+                or (department.get('Name') if isinstance(department, dict) else None)
+            )
+            if not department_name and isinstance(department, str):
+                department_name = department
+            if department_name:
+                user_mappings[email]['department'] = department_name
+
+    def _process_slack_users(
+        self,
+        slack_users: List[Dict[str, Any]],
+        user_mappings: Dict[str, Dict[str, Any]],
+        active_timetastic_emails: Set[str],
+    ):
         """Process Slack users and add to mappings."""
         for user in slack_users:
             profile = user.get('profile', {})
             email = profile.get('email', '').lower()
             if not email or user.get('deleted', False) or user.get('is_bot', False):
+                continue
+            if active_timetastic_emails and email not in active_timetastic_emails:
                 continue
             
             if email not in user_mappings:
@@ -132,12 +165,30 @@ class UserService:
             user_mappings[email]['slack_id'] = user.get('id')
             
             # Update full name if not set or if Slack has better info
-            display_name = profile.get('display_name', '')
-            real_name = profile.get('real_name', '')
-            full_name = display_name or real_name
+            real_name = profile.get('real_name') or profile.get('real_name_normalized', '')
+            display_name = profile.get('display_name') or profile.get('display_name_normalized', '')
+            full_name = real_name or display_name
             
             if full_name and (not user_mappings[email].get('full_name') or len(full_name) > len(user_mappings[email].get('full_name', ''))):
                 user_mappings[email]['full_name'] = full_name
+            elif not user_mappings[email].get('full_name') and display_name:
+                user_mappings[email]['full_name'] = display_name
+
+    def _collect_active_timetastic_emails(self, timetastic_users: List[Dict[str, Any]]) -> Set[str]:
+        emails: Set[str] = set()
+        for user in timetastic_users:
+            if not self._is_timetastic_user_active(user):
+                continue
+            email = (user.get('email') or user.get('Email', '')).strip().lower()
+            if email:
+                emails.add(email)
+        return emails
+
+    def _is_timetastic_user_active(self, user: Dict[str, Any]) -> bool:
+        for key in ('isActive', 'IsActive', 'active', 'Active', 'is_active'):
+            if key in user:
+                return bool(user.get(key))
+        return True
     
     def get_user_by_email(self, email: str, users: Optional[List[User]] = None) -> Optional[User]:
         """Get user by email address."""
