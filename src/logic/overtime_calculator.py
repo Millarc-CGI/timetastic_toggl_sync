@@ -34,7 +34,8 @@ class OvertimeCalculator:
         total_hours: float
     ) -> float:
         """Calculate overtime for a single day - simple 8 hour threshold."""
-        return max(0, total_hours - self.default_daily_hours)
+        rounded = self._round_to_half_hour(total_hours)
+        return max(0.0, rounded - self.default_daily_hours)
     
     def calculate_weekly_overtime(
         self,
@@ -43,8 +44,8 @@ class OvertimeCalculator:
         daily_hours: List[float]
     ) -> float:
         """Calculate overtime for a week - simple 40 hour threshold."""
-        total_weekly_hours = sum(daily_hours)
-        return max(0, total_weekly_hours - self.settings.default_weekly_hours)
+        total_weekly_hours = self._round_to_half_hour(sum(daily_hours))
+        return max(0.0, total_weekly_hours - self.settings.default_weekly_hours)
     
     def calculate_monthly_overtime(
         self,
@@ -54,8 +55,8 @@ class OvertimeCalculator:
         daily_hours: List[float]
     ) -> float:
         """Calculate overtime for a month - simple 160 hour threshold."""
-        total_monthly_hours = sum(daily_hours)
-        return max(0, total_monthly_hours - self.settings.default_monthly_hours)
+        total_monthly_hours = self._round_to_half_hour(sum(daily_hours))
+        return max(0.0, total_monthly_hours - self.settings.default_monthly_hours)
     
     def calculate_user_overtime(
         self,
@@ -65,44 +66,70 @@ class OvertimeCalculator:
         daily_data: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """Calculate all types of overtime for a user for a month."""
-        
+
         rules = self.get_user_rules(user_email)
-        
-        # Extract daily hours
-        daily_hours = [day['total_hours'] for day in daily_data]
-        daily_overtime = [day['overtime'] for day in daily_data]
-        
-        # Calculate weekly overtime (group by weeks)
-        weekly_overtime = 0
+        daily_overtime_total = 0.0
+        weekly_overtime = 0.0
+        monthly_hours: List[float] = []
         week_groups = defaultdict(list)
-        
-        for i, day_data in enumerate(daily_data):
-            week_start = day_data['date'] - timedelta(days=day_data['date'].weekday())
-            week_groups[week_start].append(day_data['total_hours'])
-        
+        weekend_overtime = 0.0
+        weekend_breakdown = {}
+        daily_breakdown = []
+
+        for day_data in daily_data:
+            date_obj = day_data['date']
+            total_hours = day_data.get('total_hours', 0.0)
+            if day_data.get('is_weekend'):
+                weekend_hours = day_data.get('time_entry_hours', 0.0)
+                if weekend_hours > 0:
+                    weekend_overtime += weekend_hours
+                    weekend_breakdown[date_obj] = weekend_hours
+                    daily_breakdown.append({
+                        'date': date_obj,
+                        'type': 'weekend',
+                        'hours': weekend_hours
+                    })
+                continue
+
+            overtime = self.calculate_daily_overtime(user_email, date_obj, total_hours)
+            daily_overtime_total += overtime
+            if overtime > 0:
+                daily_breakdown.append({
+                    'date': date_obj,
+                    'type': 'weekday',
+                    'hours': overtime
+                })
+            week_start = date_obj - timedelta(days=date_obj.weekday())
+            week_groups[week_start].append(total_hours)
+            monthly_hours.append(total_hours)
+
         for week_start, week_hours in week_groups.items():
             weekly_overtime += self.calculate_weekly_overtime(user_email, week_start, week_hours)
-        
-        # Calculate monthly overtime
-        monthly_overtime = self.calculate_monthly_overtime(user_email, year, month, daily_hours)
-        
-        # Simple overtime multiplier
+
+        monthly_overtime = self.calculate_monthly_overtime(user_email, year, month, monthly_hours)
         overtime_multiplier = 1.5
-        
+        total_overtime = daily_overtime_total + weekly_overtime + monthly_overtime + weekend_overtime
+
         return {
             'user_email': user_email,
             'year': year,
             'month': month,
-            'daily_overtime': sum(daily_overtime),
+            'daily_overtime': daily_overtime_total,
             'weekly_overtime': weekly_overtime,
             'monthly_overtime': monthly_overtime,
-            'total_overtime': sum(daily_overtime) + weekly_overtime + monthly_overtime,
+            'weekend_overtime': weekend_overtime,
+            'total_overtime': total_overtime,
             'overtime_multiplier': overtime_multiplier,
-            'rules_used': self.get_user_rules(user_email),  # Simple default rules
-            'daily_breakdown': daily_overtime,
-            'weekly_breakdown': dict(week_groups)
+            'rules_used': rules,
+            'daily_breakdown': daily_breakdown,
+            'weekly_breakdown': dict(week_groups),
+            'weekend_breakdown': weekend_breakdown
         }
-    
+
+    @staticmethod
+    def _round_to_half_hour(value: float) -> float:
+        return round(value * 2) / 2.0
+
     def get_overtime_summary(
         self,
         users: List[User],
@@ -115,18 +142,19 @@ class OvertimeCalculator:
         total_daily_overtime = 0
         total_weekly_overtime = 0
         total_monthly_overtime = 0
-        
+        total_weekend_overtime = 0
+
         overtime_by_department = defaultdict(float)
         overtime_by_user = []
-        
+
         for user in users:
             user_email = user.email.lower()
             overtime_data = user_overtime_data.get(user_email, {})
-            
+
             if overtime_data:
                 total_overtime = overtime_data.get('total_overtime', 0)
                 total_overtime_all += total_overtime
-                
+
                 if total_overtime > 0:
                     users_with_overtime += 1
                     overtime_by_user.append({
@@ -136,20 +164,22 @@ class OvertimeCalculator:
                         'total_overtime': total_overtime,
                         'daily_overtime': overtime_data.get('daily_overtime', 0),
                         'weekly_overtime': overtime_data.get('weekly_overtime', 0),
-                        'monthly_overtime': overtime_data.get('monthly_overtime', 0)
+                        'monthly_overtime': overtime_data.get('monthly_overtime', 0),
+                        'weekend_overtime': overtime_data.get('weekend_overtime', 0)
                     })
-                
+
                 total_daily_overtime += overtime_data.get('daily_overtime', 0)
                 total_weekly_overtime += overtime_data.get('weekly_overtime', 0)
                 total_monthly_overtime += overtime_data.get('monthly_overtime', 0)
-                
+                total_weekend_overtime += overtime_data.get('weekend_overtime', 0)
+
                 # Group by department
                 department = user.department or 'Unknown'
                 overtime_by_department[department] += total_overtime
-        
+
         # Sort users by overtime (highest first)
         overtime_by_user.sort(key=lambda x: x['total_overtime'], reverse=True)
-        
+
         return {
             'total_users': len(users),
             'users_with_overtime': users_with_overtime,
@@ -159,10 +189,11 @@ class OvertimeCalculator:
             'total_daily_overtime': total_daily_overtime,
             'total_weekly_overtime': total_weekly_overtime,
             'total_monthly_overtime': total_monthly_overtime,
+            'total_weekend_overtime': total_weekend_overtime,
             'overtime_by_department': dict(overtime_by_department),
             'top_overtime_users': overtime_by_user[:10]  # Top 10
         }
-    
+
     def validate_overtime_rules(self) -> List[str]:
         """Validate simple overtime rules configuration."""
         issues = []

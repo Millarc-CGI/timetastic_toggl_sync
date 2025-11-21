@@ -21,12 +21,22 @@ class DataAggregator:
         # Absence rules will be defined here in the logic layer
         self.absence_rules = {
             "vacation": "DEFAULT_HOURS",
-            "sick": 0,
-            "personal": 0,
             "holiday": "DEFAULT_HOURS",
             "maternity": "DEFAULT_HOURS",
             "paternity": "DEFAULT_HOURS"
         }
+        self.remote_work_types = {"remote work", "remote_work", "remote"}
+        self.full_day_types = {
+            "meeting",
+            "sick",
+            "sick leave",
+            "compassionate",
+            "workshops",
+            "paternity",
+            "maternity"
+        }
+        self.pto_like_types = {"pto", "medical appointment", "medical_appointment"}
+        self.partial_pto_cap = 2.5
     
     def aggregate_daily(
         self, 
@@ -39,44 +49,42 @@ class DataAggregator:
         
         # Filter entries for the specific date
         day_entries = [entry for entry in time_entries if entry.date == target_date]
-        
+
         # Check for absences on this date
         day_absences = [abs for abs in absences if abs.is_date_in_range(target_date)]
-        
+
         # Calculate total hours from time entries
         total_hours = sum(entry.duration_hours for entry in day_entries)
         billable_hours = sum(entry.duration_hours for entry in day_entries if entry.billable)
-        
+        is_weekend = target_date.weekday() >= 5
+
         # Handle absences
-        absence_hours = 0
-        absence_type = None
-        
-        if day_absences:
-            absence = day_absences[0]  # Take the first absence if multiple
-            absence_type = absence.absence_type.lower()
-            
-            # Apply absence rules
-            if absence_type in self.absence_rules:
-                rule = self.absence_rules[absence_type]
-                if rule == "DEFAULT_HOURS":
-                    absence_hours = self.default_daily_hours
-                elif isinstance(rule, (int, float)):
-                    absence_hours = rule
-                else:
-                    absence_hours = self.default_daily_hours
-            else:
-                # Default rule for unknown absence types
-                absence_hours = self.default_daily_hours
-        
+        absence_hours = 0.0
+        absence_entries: List[Dict[str, Any]] = []
+        needs_absence_review = False
+        absence_review_notes: List[str] = []
+
+        for absence in day_absences:
+            info = self._classify_absence(absence, target_date, total_hours + absence_hours)
+            if not info:
+                continue
+            absence_hours += info['hours']
+            if info.get('requires_review'):
+                needs_absence_review = True
+                note = info.get('review_reason')
+                if note:
+                    absence_review_notes.append(note)
+            absence_entries.append(info)
+
         # Calculate total hours (time entries + absence hours)
         total_daily_hours = total_hours + absence_hours
-        
+
         # Project breakdown
         project_hours = defaultdict(float)
         for entry in day_entries:
             project_name = entry.project_name or "No Project"
             project_hours[project_name] += entry.duration_hours
-        
+
         return {
             'date': target_date,
             'user_email': user_email,
@@ -84,11 +92,16 @@ class DataAggregator:
             'absence_hours': absence_hours,
             'total_hours': total_daily_hours,
             'billable_hours': billable_hours,
-            'absence_type': absence_type,
+            'absence_type': absence_entries[0]['absence_type'] if absence_entries else None,
+            'absence_details': absence_entries,
+            'needs_absence_review': needs_absence_review,
+            'absence_review_notes': absence_review_notes,
             'project_hours': dict(project_hours),
             'time_entries_count': len(day_entries),
             'has_entries': len(day_entries) > 0,
-            'has_absence': len(day_absences) > 0
+            'has_absence': len(day_absences) > 0,
+            'is_weekend': is_weekend,
+            'weekend_hours': total_hours if is_weekend else 0.0
         }
     
     def aggregate_monthly(
@@ -125,8 +138,9 @@ class DataAggregator:
         total_absence_hours = 0
         
         project_hours = defaultdict(float)
-        absence_breakdown = defaultdict(int)
+        absence_hours_breakdown = defaultdict(float)
         missing_days = []
+        absence_review_days: List[Dict[str, Any]] = []
         
         current_date = start_date
         while current_date <= end_date:
@@ -141,18 +155,29 @@ class DataAggregator:
             for project, hours in day_data['project_hours'].items():
                 project_hours[project] += hours
             
-            # Track absence types
-            if day_data['absence_type']:
-                absence_breakdown[day_data['absence_type']] += 1
+            # Track absence types by hours
+            for absence_detail in day_data.get('absence_details', []):
+                absence_hours_breakdown[absence_detail['absence_type']] += absence_detail['hours']
             
             # Track missing days (no entries and no absence)
             if not day_data['has_entries'] and not day_data['has_absence']:
                 missing_days.append(current_date)
-            
+
+            if day_data.get('needs_absence_review'):
+                absence_review_days.append({
+                    'date': current_date,
+                    'notes': day_data.get('absence_review_notes', [])
+                })
+
             current_date += timedelta(days=1)
         
         # Calculate working days in month
         working_days = len([d for d in daily_data if d['total_hours'] > 0])
+
+        absence_breakdown = {
+            absence_type: hours / self.default_daily_hours if self.default_daily_hours else hours
+            for absence_type, hours in absence_hours_breakdown.items()
+        }
         
         return {
             'user_email': user_email,
@@ -165,8 +190,10 @@ class DataAggregator:
             'absence_hours': total_absence_hours,
             'working_days': working_days,
             'project_hours': dict(project_hours),
-            'absence_breakdown': dict(absence_breakdown),
+            'absence_breakdown': absence_breakdown,
+            'absence_hours_breakdown': dict(absence_hours_breakdown),
             'missing_days': missing_days,
+            'absence_review_days': absence_review_days,
             'daily_data': daily_data,
             'time_entries_count': len(month_entries),
             'absences_count': len(month_absences)
@@ -226,7 +253,92 @@ class DataAggregator:
             'all_project_hours': dict(all_project_hours),
             'user_data': all_user_data
         }
-    
+
+    def _calculate_absence_hours_for_date(self, absence: Absence, target_date: date) -> float:
+        """Determine how many hours of an absence apply to a specific date."""
+        if target_date.weekday() >= 5:
+            # Skip weekends for the default working schedule
+            return 0.0
+        total_hours = absence.duration_hours(self.default_daily_hours)
+        working_days = self._working_days_between(absence.start_date, absence.end_date)
+        if working_days <= 0:
+            working_days = max(1, absence.duration_days)
+        return total_hours / working_days
+
+    @staticmethod
+    def _working_days_between(start_date: date, end_date: date) -> int:
+        days = 0
+        current = start_date
+        while current <= end_date:
+            if current.weekday() < 5:
+                days += 1
+            current += timedelta(days=1)
+        return days
+
+    def _classify_absence(self, absence: Absence, target_date: date, current_total_hours: float) -> Optional[Dict[str, Any]]:
+        absence_type = (absence.absence_type or "unknown").strip().lower()
+        if absence_type in self.remote_work_types:
+            return None
+
+        hours_for_day = self._calculate_absence_hours_for_date(absence, target_date)
+        if hours_for_day <= 0:
+            return None
+
+        entry: Dict[str, Any] = {
+            'absence_type': absence_type,
+            'hours': hours_for_day,
+            'original_hours': hours_for_day,
+            'booking_unit': absence.booking_unit,
+            'requires_review': False,
+            'review_reason': None,
+            'absence_id': absence.timetastic_id,
+        }
+
+        if absence_type in self.full_day_types:
+            entry['hours'] = self.default_daily_hours
+        elif absence_type in self.pto_like_types:
+            adjusted, needs_review, note = self._adjust_pto_hours(absence, hours_for_day, current_total_hours)
+            entry['hours'] = adjusted
+            entry['requires_review'] = needs_review
+            entry['review_reason'] = note
+        elif absence_type in self.absence_rules:
+            rule = self.absence_rules[absence_type]
+            if rule == "DEFAULT_HOURS":
+                entry['hours'] = self.default_daily_hours
+            elif isinstance(rule, (int, float)):
+                entry['hours'] = float(rule)
+
+        entry['hours'] = max(0.0, entry['hours'])
+        return entry
+
+    def _adjust_pto_hours(self, absence: Absence, hours_for_day: float, current_total_hours: float) -> Tuple[float, bool, Optional[str]]:
+        target = self.default_daily_hours
+        requires_review = False
+        review_reason = None
+        is_full_day = self._is_full_day_absence(hours_for_day)
+        if is_full_day:
+            adjusted_hours = target
+        else:
+            adjusted_hours = min(hours_for_day, self.partial_pto_cap)
+
+        remaining_capacity = max(0.0, target - current_total_hours)
+        adjusted_hours = min(adjusted_hours, remaining_capacity)
+        combined = self._round_to_half_hour(current_total_hours + adjusted_hours)
+
+        if combined < target:
+            requires_review = True
+            review_reason = (
+                f"PTO deficit: worked {combined:.1f}h (< {target:.1f}h)"
+            )
+        return adjusted_hours, requires_review, review_reason
+
+    def _is_full_day_absence(self, hours_for_day: float) -> bool:
+        return hours_for_day >= (self.default_daily_hours - 0.25)
+
+    @staticmethod
+    def _round_to_half_hour(value: float) -> float:
+        return round(value * 2) / 2.0
+
     def fill_absence_hours(
         self,
         time_entries: List[TimeEntry],
@@ -254,29 +366,28 @@ class DataAggregator:
             
             # If user has absence but no time entries, add absence hours
             if not user_entries and user_absences:
-                absence = user_absences[0]  # Take first absence
-                absence_type = absence.absence_type.lower()
-                
-                # Determine hours based on absence rules
-                hours = 0
-                if absence_type in self.absence_rules:
-                    rule = self.absence_rules[absence_type]
-                    if rule == "DEFAULT_HOURS":
-                        hours = self.default_daily_hours
-                    elif isinstance(rule, (int, float)):
-                        hours = rule
-                else:
-                    hours = self.default_daily_hours
-                
+                total_hours = 0.0
+                types = []
+                absence_id = None
+                for absence in user_absences:
+                    hours = self._calculate_absence_hours_for_date(absence, target_date)
+                    if hours <= 0:
+                        continue
+                    total_hours += hours
+                    types.append(absence.absence_type.lower())
+                    absence_id = absence.timetastic_id
+                if total_hours <= 0:
+                    continue
+
                 filled_hours.append({
                     'user_email': user_email,
                     'date': target_date,
-                    'hours': hours,
-                    'absence_type': absence_type,
-                    'absence_id': absence.timetastic_id,
+                    'hours': total_hours,
+                    'absence_type': ', '.join(types) if types else 'unknown',
+                    'absence_id': absence_id,
                     'is_filled': True
                 })
-        
+
         return filled_hours
     
     def detect_missing_entries(
