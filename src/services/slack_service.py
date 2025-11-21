@@ -2,8 +2,12 @@
 Slack API service for notifications and messaging.
 """
 
-from slack_sdk import WebClient
-from slack_sdk.errors import SlackApiError
+try:
+    from slack_sdk import WebClient
+    from slack_sdk.errors import SlackApiError
+except ImportError:
+    print("Error: slack_sdk not installed. Install with: pip install slack_sdk")
+    sys.exit(1)
 from typing import List, Dict, Any, Optional
 from datetime import datetime, date
 

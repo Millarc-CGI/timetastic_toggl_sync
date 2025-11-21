@@ -16,6 +16,7 @@ build/
 exports/
 *.sqlite
 *.db
+PROGRESS.md
 
 # Secrets
 .env
