@@ -105,7 +105,6 @@ class TimetasticService:
         start_date: str,
         end_date: str,
         user_ids: Optional[List[int]] = None,
-        status: str = "Approved"
     ) -> List[Absence]:
         """
         Get holidays for date range.
@@ -114,14 +113,12 @@ class TimetasticService:
             start_date: Start date in ISO format (e.g., "2025-10-01T00:00:00Z")
             end_date: End date in ISO format (e.g., "2025-10-16T23:59:59Z")
             user_ids: Optional list of user IDs to filter
-            status: Holiday status filter (default: "Approved")
         """
         params = {
             "Start": start_date,
             "End": end_date,
-            "Status": status
         }
-        cache_key = f"{start_date}|{end_date}|{status}"
+        cache_key = f"{start_date}|{end_date}"
         
         cached = self._holidays_cache.get(cache_key)
         if cached is not None:
@@ -221,10 +218,9 @@ class TimetasticService:
         user_id: int,
         start_date: str,
         end_date: str,
-        status: str = "Approved"
     ) -> List[Absence]:
         """Get holidays for specific user."""
-        return self.get_holidays(start_date, end_date, [user_id], status)
+        return self.get_holidays(start_date, end_date, [user_id])
     
     def get_departments(self) -> List[Dict[str, Any]]:
         """Get list of departments."""
