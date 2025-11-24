@@ -119,7 +119,7 @@ WORKSPACE_ID=optional_workspace_id
 #### Slack Integration
 ```env
 SLACK_BOT_TOKEN=xoxb-your-slack-bot-token
-SLACK_DEFAULT_SENDER_NAME=MillarcAI
+SLACK_DEFAULT_SENDER_NAME=
 SLACK_DM_FALLBACK_CHANNEL=general
 SLACK_ORG_EMAIL_DOMAIN=yourcompany.slack.com
 ```
@@ -127,10 +127,7 @@ SLACK_ORG_EMAIL_DOMAIN=yourcompany.slack.com
 #### Working Hours & Overtime Rules
 ```env
 DEFAULT_WORKING_HOURS_DAILY=8
-DEFAULT_WORKING_HOURS_WEEKLY=40
-DEFAULT_WORKING_HOURS_MONTHLY=160
-# Overtime calculation uses simple 8h/day, 40h/week, 160h/month thresholds
-# More complex rules will be implemented in logic/overtime_calculator.py
+# Overtime calculation uses simple 8h/day thresholds
 ```
 
 #### Access Control
@@ -290,11 +287,7 @@ Set up automated daily synchronization using cron (Linux/Mac) or Task Scheduler 
 ### Overtime Rules
 Simple overtime calculation is implemented:
 - Daily: 8 hours threshold
-- Weekly: 40 hours threshold  
-- Monthly: 160 hours threshold
-- Multiplier: 1.5x for overtime hours
 
-More complex per-user rules will be added to `logic/overtime_calculator.py` in the future.
 
 ### Absence Rules
 Customize how different absence types are handled:

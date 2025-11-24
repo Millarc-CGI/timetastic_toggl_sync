@@ -17,6 +17,7 @@ exports/
 *.sqlite
 *.db
 PROGRESS.md
+timetastic_toggl_sync.code-workspace
 
 # Secrets
 .env
