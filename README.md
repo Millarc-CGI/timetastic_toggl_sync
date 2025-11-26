@@ -213,6 +213,10 @@ python -m src.tests.toggl_test
 python -m src.tests.timetastic_test
 ```
 
+### Debug Scripts
+- `python -m src.tests.report_debug` – fetches data for the configured test user and prints weekly/monthly summaries (plus optional Slack delivery).
+- `python -m src.tests.project_stats_debug --year 2025 --month 10 --limit 5` – aggregates workspace time entries, runs `StatisticsGenerator.generate_project_stats`, and prints the top projects for the selected month.
+
 ## 📊 Report Types
 
 ### User Reports
@@ -240,12 +244,11 @@ python -m src.tests.timetastic_test
 The system implements role-based access control:
 
 - **Admin**: Full access to all reports and system settings
-- **Producer**: Access to project reports and user data for project tracking
+- **Producer**: Access to workspace user data for project tracking and statistics dashboards
 - **User**: Access to personal reports only
 
 Reports are stored with role-specific naming:
 - `admin_YYYY-MM.csv` - Admin reports
-- `producer_YYYY-MM.csv` - Producer reports  
 - `user_email_YYYY-MM.csv` - Individual user reports
 
 ## 📅 Automation & Scheduling

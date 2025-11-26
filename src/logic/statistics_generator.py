@@ -8,6 +8,7 @@ from collections import defaultdict
 
 from ..config import Settings
 from ..models.user import User
+from ..models.project import Project
 
 
 class StatisticsGenerator:
@@ -109,62 +110,138 @@ class StatisticsGenerator:
     def generate_project_stats(
         self,
         all_user_data: Dict[str, Dict[str, Any]],
-        users: List[User]
-    ) -> Dict[str, Dict[str, Any]]:
-        """Generate statistics for all projects."""
+        users: List[User],
+        projects: Optional[List[Project]] = None
+    ) -> Dict[Any, Dict[str, Any]]:
+        """Generate statistics for all projects, prioritizing Toggl project metadata."""
         
-        # Aggregate project data
-        project_stats = defaultdict(lambda: {
-            'total_hours': 0,
-            'billable_hours': 0,
-            'users': set(),
-            'user_hours': defaultdict(float),
-            'departments': set()
-        })
+        user_lookup = {user.email.lower(): user for user in users}
+        project_lookup = {
+            project.project_id: project
+            for project in (projects or [])
+            if project.project_id is not None and project.active and (project.billable is None or project.billable)
+        }
         
+        stats_by_id: Dict[Any, Dict[str, Any]] = {}
         for user_email, user_data in all_user_data.items():
-            # Find user info
-            user = next((u for u in users if u.email.lower() == user_email), None)
+            user = user_lookup.get(user_email)
             department = user.department if user else 'Unknown'
+            project_hours_by_id = user_data.get('project_hours_by_id') or {}
+            project_task_hours_by_id = user_data.get('project_task_hours_by_id') or {}
+            activity_dates = user_data.get('project_activity_dates') or {}
+            project_names_by_id = user_data.get('project_names_by_id') or {}
             
-            project_hours = user_data.get('project_hours', {})
-            billable_hours = user_data.get('billable_hours', 0)
-            
-            for project, hours in project_hours.items():
-                project_stats[project]['total_hours'] += hours
-                project_stats[project]['users'].add(user_email)
-                project_stats[project]['user_hours'][user_email] += hours
-                project_stats[project]['departments'].add(department)
+            for project_id, hours in project_hours_by_id.items():
+                if project_id is None:
+                    continue
+                if project_lookup and project_id not in project_lookup:
+                    continue
+                project_obj = project_lookup.get(project_id)
+                stats = stats_by_id.setdefault(project_id, {
+                    'project_id': project_id,
+                    'project': project_obj,
+                    'project_name': project_obj.name if project_obj else project_names_by_id.get(project_id, f"Project {project_id}"),
+                    'total_hours': 0.0,
+                    'users': set(),
+                    'user_hours': defaultdict(float),
+                    'task_hours': defaultdict(float),
+                    'departments': set(),
+                    'activity_start': None,
+                    'activity_end': None,
+                })
+                stats['total_hours'] += hours
+                stats['users'].add(user_email)
+                stats['user_hours'][user_email] += hours
+                stats['departments'].add(department)
                 
-                # Estimate billable hours proportionally
-                if hours > 0:
-                    billable_ratio = billable_hours / user_data.get('total_hours', 1)
-                    project_stats[project]['billable_hours'] += hours * billable_ratio
+                for task, task_hours in (project_task_hours_by_id.get(project_id, {}) or {}).items():
+                    stats['task_hours'][task] += task_hours
+                
+                window = activity_dates.get(project_id) or {}
+                start_date = window.get('start')
+                end_date = window.get('end')
+                if start_date and (stats['activity_start'] is None or start_date < stats['activity_start']):
+                    stats['activity_start'] = start_date
+                if end_date and (stats['activity_end'] is None or end_date > stats['activity_end']):
+                    stats['activity_end'] = end_date
+
+        for project_id, project in project_lookup.items():
+            stats_by_id.setdefault(project_id, {
+                'project_id': project_id,
+                'project': project,
+                'project_name': project.name,
+                'total_hours': 0.0,
+                'users': set(),
+                'user_hours': defaultdict(float),
+                'task_hours': defaultdict(float),
+                'departments': set(),
+                'activity_start': project.start_date,
+                'activity_end': project.end_date,
+            })
         
-        # Convert to final format
-        final_stats = {}
-        for project, stats in project_stats.items():
+        # Fallback to name-based aggregation when IDs are unavailable
+        if not stats_by_id:
+            project_stats = defaultdict(lambda: {
+                'total_hours': 0,
+                'users': set(),
+                'user_hours': defaultdict(float),
+                'departments': set(),
+                'task_hours': defaultdict(float)
+            })
+            
+            for user_email, user_data in all_user_data.items():
+                user = user_lookup.get(user_email)
+                department = user.department if user else 'Unknown'
+                project_hours = user_data.get('project_hours', {})
+                project_task_hours = user_data.get('project_task_hours', {})
+                
+                for project_name, hours in project_hours.items():
+                    project_stats[project_name]['total_hours'] += hours
+                    project_stats[project_name]['users'].add(user_email)
+                    project_stats[project_name]['user_hours'][user_email] += hours
+                    project_stats[project_name]['departments'].add(department)
+                    
+                    for task, task_hours in (project_task_hours.get(project_name, {}) or {}).items():
+                        project_stats[project_name]['task_hours'][task] += task_hours
+            
+            return {
+                project_name: {
+                    'project_name': project_name,
+                    'project_id': None,
+                    'total_hours': stats['total_hours'],
+                    'total_users': len(stats['users']),
+                    'average_hours_per_user': stats['total_hours'] / len(stats['users']) if stats['users'] else 0,
+                    'departments': list(stats['departments']),
+                    'user_distribution': dict(stats['user_hours']),
+                    'task_distribution': dict(
+                        sorted(stats['task_hours'].items(), key=lambda x: x[1], reverse=True)
+                    ),
+                    'project_start': None,
+                    'project_end': None,
+                }
+                for project_name, stats in project_stats.items()
+            }
+        
+        final_stats: Dict[Any, Dict[str, Any]] = {}
+        for project_id, stats in stats_by_id.items():
             total_users = len(stats['users'])
-            avg_hours_per_user = stats['total_hours'] / total_users if total_users > 0 else 0
+            project_obj = stats.get('project')
+            project_start = project_obj.start_date if project_obj and project_obj.start_date else stats.get('activity_start')
+            project_end = project_obj.end_date if project_obj and project_obj.end_date else stats.get('activity_end')
             
-            # Top contributors
-            top_contributors = sorted(
-                [(email, hours) for email, hours in stats['user_hours'].items()],
-                key=lambda x: x[1],
-                reverse=True
-            )[:5]
-            
-            final_stats[project] = {
-                'project_name': project,
+            final_stats[project_id] = {
+                'project_id': project_id,
+                'project_name': stats.get('project_name', f"Project {project_id}"),
                 'total_hours': stats['total_hours'],
-                'billable_hours': stats['billable_hours'],
                 'total_users': total_users,
-                'total_departments': len(stats['departments']),
-                'average_hours_per_user': avg_hours_per_user,
+                'average_hours_per_user': stats['total_hours'] / total_users if total_users else 0,
                 'departments': list(stats['departments']),
-                'top_contributors': top_contributors,
                 'user_distribution': dict(stats['user_hours']),
-                'billable_ratio': stats['billable_hours'] / stats['total_hours'] if stats['total_hours'] > 0 else 0
+                'task_distribution': dict(
+                    sorted(stats['task_hours'].items(), key=lambda x: x[1], reverse=True)
+                ),
+                'project_start': project_start,
+                'project_end': project_end,
             }
         
         return final_stats

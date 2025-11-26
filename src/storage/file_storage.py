@@ -13,7 +13,7 @@ from ..config import Settings
 from ..models.user import User
 from ..models.time_entry import TimeEntry
 from ..models.absence import Absence
-from ..models.report import MonthlyReport, ProjectReport, UserReport
+from ..models.report import MonthlyReport, UserReport
 
 
 class FileStorage:
@@ -132,39 +132,6 @@ class FileStorage:
                 writer.writerow([])
         return file_path
     
-    def export_project_report_csv(self, report: ProjectReport) -> Path:
-        """Export project report to CSV."""
-        file_path = self._get_role_file_path("project", report.year, report.month, "csv")
-        
-        with open(file_path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            
-            # Header
-            writer.writerow(['Project Report'])
-            writer.writerow(['Project', report.project_name])
-            writer.writerow(['Project ID', report.project_id or 'N/A'])
-            writer.writerow(['Period', report.period_string])
-            writer.writerow(['Generated', report.generated_at.isoformat() if report.generated_at else ''])
-            writer.writerow([])
-            
-            # Project statistics
-            writer.writerow(['Project Statistics'])
-            writer.writerow(['Total Hours', f"{report.total_hours:.2f}"])
-            writer.writerow(['Total Users', report.total_users])
-            writer.writerow(['Average Hours per User', f"{report.average_hours_per_user:.2f}"])
-            writer.writerow([])
-            
-            # User breakdown
-            if report.user_hours:
-                writer.writerow(['User Breakdown'])
-                writer.writerow(['User', 'Hours', 'Percentage'])
-                total_hours = sum(report.user_hours.values())
-                for user, hours in sorted(report.user_hours.items(), key=lambda x: x[1], reverse=True):
-                    percentage = (hours / total_hours * 100) if total_hours > 0 else 0
-                    writer.writerow([user, f"{hours:.2f}", f"{percentage:.1f}%"])
-        
-        return file_path
-    
     def export_admin_report_csv(self, reports: List[UserReport], year: int, month: int) -> Path:
         """Export admin report (summary of all users) to CSV."""
         file_path = self._get_role_file_path("admin", year, month, "csv")
@@ -213,48 +180,6 @@ class FileStorage:
         
         return file_path
     
-    def export_producer_report_csv(self, project_reports: List[ProjectReport], year: int, month: int) -> Path:
-        """Export producer report (project-focused) to CSV."""
-        file_path = self._get_role_file_path("producer", year, month, "csv")
-        
-        with open(file_path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            
-            # Header
-            writer.writerow(['Producer Report - Projects'])
-            writer.writerow(['Period', f"{year}-{month:02d}"])
-            writer.writerow(['Generated', datetime.now().isoformat()])
-            writer.writerow(['Total Projects', len(project_reports)])
-            writer.writerow([])
-            
-            # Project summary
-            total_hours = sum(r.total_hours for r in project_reports)
-            total_users = sum(r.total_users for r in project_reports)
-            
-            writer.writerow(['Project Summary'])
-            writer.writerow(['Total Hours (All Projects)', f"{total_hours:.2f}"])
-            writer.writerow(['Total Users (All Projects)', total_users])
-            writer.writerow(['Average Hours per Project', f"{total_hours / len(project_reports):.2f}" if project_reports else "0.00"])
-            writer.writerow([])
-            
-            # Individual project details
-            writer.writerow(['Project Details'])
-            writer.writerow([
-                'Project Name', 'Project ID', 'Total Hours', 'Total Users', 
-                'Average Hours per User'
-            ])
-            
-            for report in sorted(project_reports, key=lambda x: x.total_hours, reverse=True):
-                writer.writerow([
-                    report.project_name,
-                    report.project_id or 'N/A',
-                    f"{report.total_hours:.2f}",
-                    report.total_users,
-                    f"{report.average_hours_per_user:.2f}"
-                ])
-
-        return file_path
-    
     # Utility methods
     def list_available_reports(self, year: int, month: int) -> Dict[str, List[Path]]:
         """List available report files for a given month."""
@@ -262,9 +187,7 @@ class FileStorage:
         
         reports = {
             'admin': [],
-            'producer': [],
             'user': [],
-            'project': [],
             'raw': []
         }
         
@@ -273,10 +196,6 @@ class FileStorage:
             
             if filename.startswith("admin_"):
                 reports['admin'].append(file_path)
-            elif filename.startswith("producer_"):
-                reports['producer'].append(file_path)
-            elif filename.startswith("project_"):
-                reports['project'].append(file_path)
             elif filename.startswith("user_"):
                 reports['user'].append(file_path)
         

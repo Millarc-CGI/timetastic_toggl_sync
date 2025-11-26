@@ -7,7 +7,7 @@ from datetime import datetime, date
 
 from ..config import Settings
 from ..models.user import User
-from ..models.report import MonthlyReport, ProjectReport, UserReport
+from ..models.report import MonthlyReport, UserReport
 
 
 class ReportGenerator:
@@ -123,28 +123,6 @@ class ReportGenerator:
             generated_at=datetime.now()
         )
     
-    def generate_project_report(
-        self,
-        project_name: str,
-        project_id: Optional[int],
-        year: int,
-        month: int,
-        project_stats: Dict[str, Any]
-    ) -> ProjectReport:
-        """Generate report for a specific project."""
-        
-        return ProjectReport(
-            project_name=project_name,
-            project_id=project_id,
-            year=year,
-            month=month,
-            total_hours=project_stats.get('total_hours', 0),
-            total_users=project_stats.get('total_users', 0),
-            average_hours_per_user=project_stats.get('average_hours_per_user', 0),
-            user_hours=project_stats.get('user_distribution', {}),
-            generated_at=datetime.now()
-        )
-    
     def generate_admin_report(
         self,
         users: List[User],
@@ -178,29 +156,6 @@ class ReportGenerator:
         
         return reports
     
-    def generate_producer_report(
-        self,
-        project_stats: Dict[str, Dict[str, Any]],
-        year: int,
-        month: int
-    ) -> List[ProjectReport]:
-        """Generate project-focused report for producers."""
-        
-        reports = []
-        
-        for project_name, stats in project_stats.items():
-            report = self.generate_project_report(
-                project_name=project_name,
-                project_id=stats.get('project_id'),
-                year=year,
-                month=month,
-                project_stats=stats
-            )
-            
-            reports.append(report)
-        
-        return reports
-    
     def format_user_report_summary(self, report: UserReport) -> str:
         """Format user report as a summary string."""
         
@@ -214,56 +169,29 @@ class ReportGenerator:
         lines.append(f"  • Total Hours: {report.total_hours:.1f}h")
         lines.append("")
         
-        if report.weekly_overtime > 0 or report.monthly_overtime > 0:
+        show_weekly = report.report_type != "monthly" and report.weekly_overtime
+        show_monthly = report.report_type != "weekly" and report.monthly_overtime
+        if show_weekly or show_monthly:
             lines.append("⏱️ Overtime:")
-            if report.weekly_overtime:
+            if show_weekly:
                 lines.append(f"  • Weekly Overtime: {report.weekly_overtime:.1f}h")
-            if report.monthly_overtime:
+            if show_monthly:
                 lines.append(f"  • Monthly Overtime: {report.monthly_overtime:.1f}h")
             lines.append("")
         
         if report.projects_worked:
             lines.append("📁 Projects Worked On:")
-            lines.append(f"  • Total Projects: {len(report.projects_worked)}")
             for project in report.projects_worked:
                 lines.append(f"  • {project}")
             lines.append("")
         
         if report.has_missing_entries:
             lines.append("⚠️ Missing Entries:")
-            lines.append(f"  • Missing Days: {len(report.missing_days)}")
+            lines.append(f"  • Missing Entries (Days): {len(report.missing_days)}")
             for missing_day in report.missing_days[:5]:  # Show first 5
                 lines.append(f"  • {missing_day.strftime('%Y-%m-%d (%A)')}")
             if len(report.missing_days) > 5:
                 lines.append(f"  • ... and {len(report.missing_days) - 5} more")
-            lines.append("")
-        
-        lines.append(f"📅 Generated: {report.generated_at.strftime('%Y-%m-%d %H:%M')}")
-        
-        return "\n".join(lines)
-    
-    def format_project_report_summary(self, report: ProjectReport) -> str:
-        """Format project report as a summary string."""
-        
-        lines = []
-        lines.append(f"📈 Project Report - {report.project_name}")
-        if report.project_id:
-            lines.append(f"🆔 Project ID: {report.project_id}")
-        lines.append(f"📅 Period: {report.period_string}")
-        lines.append("")
-        
-        lines.append("📊 Project Statistics:")
-        lines.append(f"  • Total Hours: {report.total_hours:.1f}h")
-        lines.append(f"  • Total Users: {report.total_users}")
-        lines.append(f"  • Average Hours per User: {report.average_hours_per_user:.1f}h")
-        lines.append("")
-        
-        if report.user_hours:
-            lines.append("👥 User Contributions:")
-            sorted_users = sorted(report.user_hours.items(), key=lambda x: x[1], reverse=True)
-            for user, hours in sorted_users:
-                percentage = (hours / report.total_hours * 100) if report.total_hours > 0 else 0
-                lines.append(f"  • {user}: {hours:.1f}h ({percentage:.1f}%)")
             lines.append("")
         
         lines.append(f"📅 Generated: {report.generated_at.strftime('%Y-%m-%d %H:%M')}")
@@ -329,42 +257,3 @@ class ReportGenerator:
         
         return "\n".join(lines)
     
-    def format_producer_summary(self, reports: List[ProjectReport]) -> str:
-        """Format producer summary of all projects."""
-        
-        if not reports:
-            return "No project reports available."
-        
-        lines = []
-        lines.append("📈 Producer Summary - All Projects")
-        lines.append(f"📅 Period: {reports[0].period_string}")
-        lines.append(f"📁 Total Projects: {len(reports)}")
-        lines.append("")
-        
-        # Summary statistics
-        total_hours = sum(r.total_hours for r in reports)
-        total_users = sum(r.total_users for r in reports)
-        
-        lines.append("📊 Project Summary:")
-        lines.append(f"  • Total Hours: {total_hours:.1f}h")
-        lines.append(f"  • Total Users: {total_users}")
-        lines.append(f"  • Average Hours per Project: {total_hours / len(reports):.1f}h")
-        lines.append("")
-        
-        # Top projects by hours
-        top_projects = sorted(reports, key=lambda x: x.total_hours, reverse=True)[:5]
-        lines.append("🏆 Top Projects (by hours):")
-        for i, report in enumerate(top_projects, 1):
-            lines.append(f"  {i}. {report.project_name}: {report.total_hours:.1f}h")
-        lines.append("")
-        
-        # Projects by user count
-        projects_by_users = sorted(reports, key=lambda x: x.total_users, reverse=True)[:5]
-        lines.append("👥 Most Collaborative Projects:")
-        for i, report in enumerate(projects_by_users, 1):
-            lines.append(f"  {i}. {report.project_name}: {report.total_users} users")
-        lines.append("")
-        
-        lines.append(f"📅 Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-        
-        return "\n".join(lines)

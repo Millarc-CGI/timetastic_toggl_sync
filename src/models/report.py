@@ -42,57 +42,6 @@ class MonthlyReport:
 
 
 @dataclass
-class ProjectReport:
-    """Project-focused report for producers."""
-    
-    project_name: str
-    project_id: Optional[int] = None
-    year: int = 0
-    month: int = 0
-    
-    # Project statistics
-    total_hours: float = 0.0
-    total_users: int = 0
-    average_hours_per_user: float = 0.0
-    
-    # User breakdown
-    user_hours: Dict[str, float] = None
-    
-    # Metadata
-    generated_at: Optional[datetime] = None
-    period_start: Optional[date] = None
-    period_end: Optional[date] = None
-    
-    def __post_init__(self):
-        """Initialize default values after dataclass creation."""
-        if self.user_hours is None:
-            self.user_hours = {}
-        if self.generated_at is None:
-            self.generated_at = datetime.now()
-    
-    @property
-    def period_string(self) -> str:
-        """Get period as string."""
-        return f"{self.year}-{self.month:02d}" if self.year > 0 and self.month > 0 else "All Time"
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert report to dictionary for storage."""
-        return {
-            'project_name': self.project_name,
-            'project_id': self.project_id,
-            'year': self.year,
-            'month': self.month,
-            'total_hours': self.total_hours,
-            'total_users': self.total_users,
-            'average_hours_per_user': self.average_hours_per_user,
-            'user_hours': self.user_hours,
-            'generated_at': self.generated_at.isoformat() if self.generated_at else None,
-            'period_start': self.period_start.isoformat() if self.period_start else None,
-            'period_end': self.period_end.isoformat() if self.period_end else None,
-        }
-
-
-@dataclass
 class UserReport:
     """Individual user report with detailed breakdown."""
     

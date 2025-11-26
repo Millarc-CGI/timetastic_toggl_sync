@@ -81,7 +81,11 @@ class OvertimeCalculator:
         for day_data in daily_data:
             date_obj = day_data['date']
             total_hours = day_data.get('total_hours', 0.0)
-            if day_data.get('is_weekend'):
+            is_effective_weekend = day_data.get('is_weekend')
+            is_actual_weekend = day_data.get('is_actual_weekend', is_effective_weekend)
+            is_public_holiday = day_data.get('is_public_holiday', False)
+
+            if is_effective_weekend:
                 weekend_hours = day_data.get('time_entry_hours', 0.0)
                 weekend_overtime += weekend_hours
                 weekend_breakdown[date_obj] = weekend_hours
@@ -90,7 +94,7 @@ class OvertimeCalculator:
                     'type': 'weekend',
                     'hours': weekend_hours
                 })
-                month_expected_increment = 0.0
+                month_expected_increment = 0.0 if (is_actual_weekend and not is_public_holiday) else self.default_daily_hours
             else:
                 overtime = self.calculate_daily_overtime(user_email, date_obj, total_hours)
                 daily_overtime_total += overtime

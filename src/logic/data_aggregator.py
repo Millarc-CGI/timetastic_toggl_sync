@@ -79,11 +79,28 @@ class DataAggregator:
         # Calculate total hours (time entries + absence hours)
         total_daily_hours = total_hours + absence_hours
 
-        # Project breakdown
+        # Project + task breakdown
         project_hours = defaultdict(float)
+        project_task_hours = defaultdict(lambda: defaultdict(float))
+        project_hours_by_id = defaultdict(float)
+        project_task_hours_by_id = defaultdict(lambda: defaultdict(float))
+        project_names_by_id: Dict[int, str] = {}
         for entry in day_entries:
             project_name = entry.project_name or "No Project"
+            project_id = entry.project_id
+            task_name = entry.task_name or entry.description or "No Task"
             project_hours[project_name] += entry.duration_hours
+            project_task_hours[project_name][task_name] += entry.duration_hours
+            if project_id is not None:
+                project_hours_by_id[project_id] += entry.duration_hours
+                project_task_hours_by_id[project_id][task_name] += entry.duration_hours
+                project_names_by_id[project_id] = project_name
+
+        has_holiday_absence = any(
+            'holiday' in (entry.get('absence_type') or '').lower()
+            for entry in absence_entries
+        )
+        effective_weekend = is_weekend or has_holiday_absence
 
         return {
             'date': target_date,
@@ -100,8 +117,18 @@ class DataAggregator:
             'time_entries_count': len(day_entries),
             'has_entries': len(day_entries) > 0,
             'has_absence': len(day_absences) > 0,
-            'is_weekend': is_weekend,
-            'weekend_hours': total_hours if is_weekend else 0.0
+            'is_weekend': effective_weekend,
+            'is_actual_weekend': is_weekend,
+            'is_public_holiday': has_holiday_absence,
+            'weekend_hours': total_hours if effective_weekend else 0.0,
+            'task_hours': {
+                project: dict(tasks) for project, tasks in project_task_hours.items()
+            },
+            'project_hours_by_id': dict(project_hours_by_id),
+            'project_task_hours_by_id': {
+                project_id: dict(tasks) for project_id, tasks in project_task_hours_by_id.items()
+            },
+            'project_names_by_id': project_names_by_id
         }
     
     def aggregate_monthly(
@@ -141,6 +168,12 @@ class DataAggregator:
         absence_hours_breakdown = defaultdict(float)
         missing_days = []
         absence_review_days: List[Dict[str, Any]] = []
+        project_task_hours = defaultdict(lambda: defaultdict(float))
+        project_hours_by_id = defaultdict(float)
+        project_task_hours_by_id = defaultdict(lambda: defaultdict(float))
+        project_activity_dates: Dict[Any, Dict[str, Optional[date]]] = {}
+        project_names_by_id: Dict[Any, str] = {}
+        today = date.today()
         
         current_date = start_date
         while current_date <= end_date:
@@ -154,13 +187,27 @@ class DataAggregator:
             # Aggregate project hours
             for project, hours in day_data['project_hours'].items():
                 project_hours[project] += hours
+
+            for project_id, hours in day_data.get('project_hours_by_id', {}).items():
+                project_hours_by_id[project_id] += hours
+                if hours > 0:
+                    info = project_activity_dates.setdefault(project_id, {'start': None, 'end': None})
+                    if info['start'] is None or day_data['date'] < info['start']:
+                        info['start'] = day_data['date']
+                    if info['end'] is None or day_data['date'] > info['end']:
+                        info['end'] = day_data['date']
             
             # Track absence types by hours
             for absence_detail in day_data.get('absence_details', []):
                 absence_hours_breakdown[absence_detail['absence_type']] += absence_detail['hours']
             
-            # Track missing days (no entries and no absence)
-            if not day_data['has_entries'] and not day_data['has_absence']:
+            # Track missing days (no entries and no absence) but skip today/future
+            if (
+                current_date < today
+                and not day_data['has_entries']
+                and not day_data['has_absence']
+                and not day_data['is_weekend']
+            ):
                 missing_days.append(current_date)
 
             if day_data.get('needs_absence_review'):
@@ -168,6 +215,17 @@ class DataAggregator:
                     'date': current_date,
                     'notes': day_data.get('absence_review_notes', [])
                 })
+
+            for project, tasks in day_data.get('task_hours', {}).items():
+                for task, hours in tasks.items():
+                    project_task_hours[project][task] += hours
+
+            for project_id, tasks in day_data.get('project_task_hours_by_id', {}).items():
+                for task, hours in tasks.items():
+                    project_task_hours_by_id[project_id][task] += hours
+
+            for project_id, name in (day_data.get('project_names_by_id') or {}).items():
+                project_names_by_id[project_id] = name
 
             current_date += timedelta(days=1)
         
@@ -196,7 +254,21 @@ class DataAggregator:
             'absence_review_days': absence_review_days,
             'daily_data': daily_data,
             'time_entries_count': len(month_entries),
-            'absences_count': len(month_absences)
+            'absences_count': len(month_absences),
+            'project_task_hours': {
+                project: dict(tasks) for project, tasks in project_task_hours.items()
+            },
+            'project_hours_by_id': dict(project_hours_by_id),
+            'project_task_hours_by_id': {
+                project_id: dict(tasks) for project_id, tasks in project_task_hours_by_id.items()
+            },
+            'project_activity_dates': {
+                project_id: {
+                    'start': info.get('start'),
+                    'end': info.get('end')
+                } for project_id, info in project_activity_dates.items()
+            },
+            'project_names_by_id': project_names_by_id
         }
     
     def aggregate_all_users(
@@ -254,16 +326,27 @@ class DataAggregator:
             'user_data': all_user_data
         }
 
+
     def _calculate_absence_hours_for_date(self, absence: Absence, target_date: date) -> float:
         """Determine how many hours of an absence apply to a specific date."""
-        if target_date.weekday() >= 5:
-            # Skip weekends for the default working schedule
+        default_hours = self.default_daily_hours
+        absence_type = (absence.absence_type or "").lower()
+        is_weekend = target_date.weekday() >= 5
+        is_public_holiday = "holiday" in absence_type
+
+        if is_weekend and not is_public_holiday:
+            # Skip non-working weekend days
             return 0.0
-        total_hours = absence.duration_hours(self.default_daily_hours)
+
+        partial_fraction = self._get_partial_day_fraction(absence, target_date)
+        if partial_fraction is not None:
+            return default_hours * partial_fraction
+
+        total_hours = absence.duration_hours(default_hours)
         working_days = self._working_days_between(absence.start_date, absence.end_date)
         if working_days <= 0:
             working_days = max(1, absence.duration_days)
-        return total_hours / working_days
+        return min(default_hours, total_hours / working_days) if working_days else default_hours
 
     @staticmethod
     def _working_days_between(start_date: date, end_date: date) -> int:
@@ -334,6 +417,44 @@ class DataAggregator:
 
     def _is_full_day_absence(self, hours_for_day: float) -> bool:
         return hours_for_day >= (self.default_daily_hours - 0.25)
+
+    def _get_partial_day_fraction(self, absence: Absence, target_date: date) -> Optional[float]:
+        """Infer if the absence only covers half a day."""
+        marker_start = self._normalize_half_day_marker(absence.start_type)
+        marker_end = self._normalize_half_day_marker(absence.end_type)
+
+        if absence.is_single_day:
+            if marker_start and marker_end:
+                if marker_start == marker_end:
+                    return 0.5
+                if marker_start == "am" and marker_end == "pm":
+                    return 1.0
+            return None
+
+        if target_date == absence.start_date and marker_start == "pm":
+            return 0.5
+        if target_date == absence.end_date and marker_end == "am":
+            return 0.5
+        return None
+
+    @staticmethod
+    def _normalize_half_day_marker(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        normalized = value.strip().lower()
+        mapping = {
+            "am": "am",
+            "pm": "pm",
+            "morning": "am",
+            "afternoon": "pm",
+            "first_half": "am",
+            "second_half": "pm",
+            "firsthalf": "am",
+            "secondhalf": "pm",
+            "first half": "am",
+            "second half": "pm",
+        }
+        return mapping.get(normalized, None)
 
     @staticmethod
     def _round_to_half_hour(value: float) -> float:

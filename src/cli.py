@@ -11,7 +11,7 @@ from typing import Optional
 from .config import load_settings
 from .services import TogglService, TimetasticService, SlackService, UserService
 from .storage import SQLiteStorage, FileStorage
-from .logic import DataAggregator, OvertimeCalculator, StatisticsGenerator, ReportGenerator
+from .logic import DataAggregator, OvertimeCalculator, ReportGenerator
 from .access_control import PermissionManager
 
 
@@ -237,7 +237,7 @@ def check_missing(days: int):
 @click.option("--year", type=int, help="Year (defaults to previous month)")
 @click.option("--month", type=int, help="Month 1-12 (defaults to previous month)")
 @click.option("--user", help="Generate report for specific user email")
-@click.option("--role", type=click.Choice(['admin', 'producer', 'user']), help="Generate report for specific role")
+@click.option("--role", type=click.Choice(['admin', 'user']), help="Generate report for specific role")
 def report_monthly(year: Optional[int], month: Optional[int], user: Optional[str], role: Optional[str]):
     """Generate monthly reports."""
     settings = load_settings()
@@ -258,7 +258,6 @@ def report_monthly(year: Optional[int], month: Optional[int], user: Optional[str
         aggregator = DataAggregator(settings)
         overtime_calc = OvertimeCalculator(settings)
         report_gen = ReportGenerator(settings)
-        stats_gen = StatisticsGenerator(settings)
         
         # Get date range
         start_date = date(year, month, 1)
@@ -331,12 +330,6 @@ def report_monthly(year: Optional[int], month: Optional[int], user: Optional[str
                 csv_file = file_storage.export_admin_report_csv(admin_reports, year, month)
                 print(f"✅ Admin report exported to: {csv_file}")
                 
-            elif role == "producer":
-                project_stats = stats_gen.generate_project_stats(all_user_data, users)
-                producer_reports = report_gen.generate_producer_report(project_stats, year, month)
-                csv_file = file_storage.export_producer_report_csv(producer_reports, year, month)
-                print(f"✅ Producer report exported to: {csv_file}")
-        
         else:
             # Generate all reports
             print("📊 Generating all report types...")
@@ -345,12 +338,6 @@ def report_monthly(year: Optional[int], month: Optional[int], user: Optional[str
             admin_reports = report_gen.generate_admin_report(users, all_user_data, year, month)
             admin_csv = file_storage.export_admin_report_csv(admin_reports, year, month)
             print(f"   ✅ Admin report: {admin_csv}")
-            
-            # Producer report
-            project_stats = stats_gen.generate_project_stats(all_user_data, users)
-            producer_reports = report_gen.generate_producer_report(project_stats, year, month)
-            producer_csv = file_storage.export_producer_report_csv(producer_reports, year, month)
-            print(f"   ✅ Producer report: {producer_csv}")
             
             # Individual user reports
             for user_obj in users:
