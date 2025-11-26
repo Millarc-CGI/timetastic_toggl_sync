@@ -77,7 +77,7 @@ class FileStorage:
     
     # CSV exports for reports
     def export_monthly_report_csv(self, report: MonthlyReport, role: str = "user") -> Path:
-        """Export monthly report to CSV."""
+        """Export simplified monthly report to CSV."""
         if role == "user":
             file_path = self._get_user_file_path(report.user_email, report.year, report.month, "csv")
         else:
@@ -93,29 +93,43 @@ class FileStorage:
             writer.writerow(['Period', report.period_string])
             writer.writerow(['Generated', report.generated_at.isoformat() if report.generated_at else ''])
             writer.writerow([])
-            
+
             # Time tracking summary
             writer.writerow(['Time Tracking Summary'])
             writer.writerow(['Total Hours', f"{report.total_hours:.2f}"])
-            writer.writerow(['Billable Hours', f"{report.billable_hours:.2f}"])
             writer.writerow(['Overtime Hours', f"{report.overtime_hours:.2f}"])
+            writer.writerow(['Total Absence Days', f"{report.total_absence_days:.2f}"])
             writer.writerow([])
-            
-            # Absence summary
-            writer.writerow(['Absence Summary'])
-            writer.writerow(['Vacation Days', report.vacation_days])
-            writer.writerow(['Sick Days', report.sick_days])
-            writer.writerow(['Personal Days', report.personal_days])
-            writer.writerow(['Other Absence Days', report.other_absence_days])
+
+        return file_path
+
+    def export_user_report_csv(self, report: UserReport) -> Path:
+        """Export user report (weekly or monthly) to CSV."""
+        file_path = self._get_user_file_path(report.user_email, report.year, report.month, "csv")
+        with open(file_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow([f"{report.report_type.title()} User Report"])
+            writer.writerow(['User', report.user_name])
+            writer.writerow(['Email', report.user_email])
+            writer.writerow(['Department', report.department or 'N/A'])
+            writer.writerow(['Period', report.period_string])
+            writer.writerow(['Generated', report.generated_at.isoformat() if report.generated_at else ''])
             writer.writerow([])
-            
-            # Project breakdown
-            if report.project_hours:
-                writer.writerow(['Project Breakdown'])
-                writer.writerow(['Project', 'Hours'])
-                for project, hours in report.project_hours.items():
-                    writer.writerow([project, f"{hours:.2f}"])
-        
+            writer.writerow(['Totals'])
+            writer.writerow(['Total Hours', f"{report.total_hours:.2f}"])
+            writer.writerow(['Weekly Overtime', f"{report.weekly_overtime:.2f}"])
+            writer.writerow(['Monthly Overtime', f"{report.monthly_overtime:.2f}"])
+            writer.writerow([])
+            if report.projects_worked:
+                writer.writerow(['Projects Worked'])
+                for project in report.projects_worked:
+                    writer.writerow([project])
+                writer.writerow([])
+            if report.missing_days:
+                writer.writerow(['Missing Days'])
+                for missing_day in report.missing_days:
+                    writer.writerow([missing_day.isoformat()])
+                writer.writerow([])
         return file_path
     
     def export_project_report_csv(self, report: ProjectReport) -> Path:
@@ -138,10 +152,6 @@ class FileStorage:
             writer.writerow(['Total Hours', f"{report.total_hours:.2f}"])
             writer.writerow(['Total Users', report.total_users])
             writer.writerow(['Average Hours per User', f"{report.average_hours_per_user:.2f}"])
-            if report.estimated_cost:
-                writer.writerow(['Estimated Cost', f"${report.estimated_cost:.2f}"])
-            if report.hourly_rate:
-                writer.writerow(['Hourly Rate', f"${report.hourly_rate:.2f}"])
             writer.writerow([])
             
             # User breakdown
@@ -172,20 +182,19 @@ class FileStorage:
             # Summary statistics
             total_hours = sum(r.total_hours for r in reports)
             total_overtime = sum(r.monthly_overtime for r in reports)
-            total_billable = sum(r.billable_hours for r in reports)
             
             writer.writerow(['Summary Statistics'])
             writer.writerow(['Total Hours (All Users)', f"{total_hours:.2f}"])
             writer.writerow(['Total Overtime (All Users)', f"{total_overtime:.2f}"])
-            writer.writerow(['Total Billable Hours (All Users)', f"{total_billable:.2f}"])
             writer.writerow(['Average Hours per User', f"{total_hours / len(reports):.2f}" if reports else "0.00"])
             writer.writerow([])
             
             # Individual user details
             writer.writerow(['User Details'])
             writer.writerow([
-                'User', 'Email', 'Department', 'Total Hours', 'Billable Hours', 
-                'Overtime', 'Vacation Days', 'Sick Days', 'Projects Count', 'Missing Days'
+                'User', 'Email', 'Department', 'Report Type', 'Period Label',
+                'Total Hours', 'Weekly Overtime', 'Monthly Overtime',
+                'Projects Count', 'Missing Days'
             ])
             
             for report in sorted(reports, key=lambda x: x.total_hours, reverse=True):
@@ -193,11 +202,11 @@ class FileStorage:
                     report.user_name,
                     report.user_email,
                     report.department or 'N/A',
+                    report.report_type,
+                    report.period_label,
                     f"{report.total_hours:.2f}",
-                    f"{report.billable_hours:.2f}",
+                    f"{report.weekly_overtime:.2f}",
                     f"{report.monthly_overtime:.2f}",
-                    report.absence_breakdown.get('vacation', 0),
-                    report.absence_breakdown.get('sick', 0),
                     len(report.projects_worked),
                     len(report.missing_days)
                 ])
@@ -232,7 +241,7 @@ class FileStorage:
             writer.writerow(['Project Details'])
             writer.writerow([
                 'Project Name', 'Project ID', 'Total Hours', 'Total Users', 
-                'Average Hours per User', 'Estimated Cost', 'Hourly Rate'
+                'Average Hours per User'
             ])
             
             for report in sorted(project_reports, key=lambda x: x.total_hours, reverse=True):
@@ -241,11 +250,9 @@ class FileStorage:
                     report.project_id or 'N/A',
                     f"{report.total_hours:.2f}",
                     report.total_users,
-                    f"{report.average_hours_per_user:.2f}",
-                    f"${report.estimated_cost:.2f}" if report.estimated_cost else 'N/A',
-                    f"${report.hourly_rate:.2f}" if report.hourly_rate else 'N/A'
+                    f"{report.average_hours_per_user:.2f}"
                 ])
-        
+
         return file_path
     
     # Utility methods

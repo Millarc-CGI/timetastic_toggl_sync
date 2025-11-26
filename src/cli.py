@@ -99,7 +99,6 @@ def sync(start: str, end: str):
     toggl_service = TogglService(settings)
     timetastic_service = TimetasticService(settings)
     storage = SQLiteStorage(settings)
-    file_storage = FileStorage(settings)
     
     # Start sync log
     log_id = storage.log_sync_start("manual_sync")
@@ -123,11 +122,6 @@ def sync(start: str, end: str):
         print("💾 Saving data to database...")
         storage.save_time_entries(time_entries)
         storage.save_absences(absences)
-        
-        # Export raw data
-        print("📁 Exporting raw data...")
-        raw_file = file_storage.export_raw_data(time_entries, absences, start_date.year, start_date.month)
-        print(f"   ✅ Raw data exported to: {raw_file}")
         
         # Log success
         storage.log_sync_end(log_id, "success", len(time_entries) + len(absences))
@@ -308,12 +302,18 @@ def report_monthly(year: Optional[int], month: Optional[int], user: Optional[str
                     overtime_data = overtime_calc.calculate_user_overtime(user_obj.email, year, month, user_data['daily_data'])
                     
                     # Generate user report
-                    user_report = report_gen.generate_user_report(
-                        user_obj.email, user_obj.display_name, year, month, user_data, overtime_data
+                    user_report = report_gen.generate_monthly_user_report(
+                        user_obj.email,
+                        user_obj.display_name,
+                        year,
+                        month,
+                        user_data,
+                        overtime_data,
+                        department=user_obj.department
                     )
                     
                     # Export to CSV
-                    csv_file = file_storage.export_monthly_report_csv(user_report.to_dict(), "user")
+                    csv_file = file_storage.export_user_report_csv(user_report)
                     print(f"✅ User report exported to: {csv_file}")
                     
                     # Send Slack notification if enabled
@@ -359,11 +359,17 @@ def report_monthly(year: Optional[int], month: Optional[int], user: Optional[str
                     user_data = all_user_data[user_email]
                     overtime_data = overtime_calc.calculate_user_overtime(user_obj.email, year, month, user_data['daily_data'])
                     
-                    user_report = report_gen.generate_user_report(
-                        user_obj.email, user_obj.display_name, year, month, user_data, overtime_data
+                    user_report = report_gen.generate_monthly_user_report(
+                        user_obj.email,
+                        user_obj.display_name,
+                        year,
+                        month,
+                        user_data,
+                        overtime_data,
+                        department=user_obj.department
                     )
                     
-                    csv_file = file_storage.export_monthly_report_csv(user_report.to_dict(), "user")
+                    csv_file = file_storage.export_user_report_csv(user_report)
                     print(f"   ✅ User report for {user_obj.display_name}: {csv_file}")
             
             print(f"✅ Generated all reports for {year}-{month:02d}")

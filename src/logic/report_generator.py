@@ -23,17 +23,18 @@ class ReportGenerator:
         year: int,
         month: int,
         user_data: Dict[str, Any],
-        overtime_data: Dict[str, Any]
+        overtime_data: Dict[str, Any],
+        report_type: str = "monthly",
+        period_label: Optional[str] = None,
+        department: Optional[str] = None
     ) -> UserReport:
         """Generate detailed report for a specific user."""
         
-        daily_data = user_data.get('daily_data', [])
         project_hours = user_data.get('project_hours', {})
-        absence_breakdown = user_data.get('absence_breakdown', {})
         missing_days = user_data.get('missing_days', [])
         
-        # Find user info for department
-        department = None  # Would need user object passed in
+        if not period_label and year and month:
+            period_label = f"{year}-{month:02d}"
         
         return UserReport(
             user_email=user_email,
@@ -41,20 +42,61 @@ class ReportGenerator:
             department=department,
             year=year,
             month=month,
+            report_type=report_type,
+            period_label=period_label,
             total_hours=user_data.get('total_hours', 0),
-            billable_hours=user_data.get('billable_hours', 0),
-            non_billable_hours=user_data.get('total_hours', 0) - user_data.get('billable_hours', 0),
-            daily_overtime=overtime_data.get('daily_overtime', 0),
             weekly_overtime=overtime_data.get('weekly_overtime', 0),
             monthly_overtime=overtime_data.get('monthly_overtime', 0),
-            total_absence_days=sum(absence_breakdown.values()),
-            absence_breakdown=absence_breakdown,
             projects_worked=list(project_hours.keys()),
-            project_hours=project_hours,
             missing_days=missing_days,
-            period_start=user_data.get('period_start'),
-            period_end=user_data.get('period_end'),
             generated_at=datetime.now()
+        )
+
+    def generate_weekly_user_report(
+        self,
+        user_email: str,
+        user_name: str,
+        week_start: date,
+        week_end: date,
+        user_data: Dict[str, Any],
+        overtime_data: Dict[str, Any],
+        department: Optional[str] = None
+    ) -> UserReport:
+        """Generate a weekly report for a user."""
+        period_label = f"{week_start.strftime('%Y-%m-%d')} to {week_end.strftime('%Y-%m-%d')}"
+        return self.generate_user_report(
+            user_email,
+            user_name,
+            year=week_start.year,
+            month=week_start.month,
+            user_data=user_data,
+            overtime_data=overtime_data,
+            report_type="weekly",
+            period_label=period_label,
+            department=department
+        )
+
+    def generate_monthly_user_report(
+        self,
+        user_email: str,
+        user_name: str,
+        year: int,
+        month: int,
+        user_data: Dict[str, Any],
+        overtime_data: Dict[str, Any],
+        department: Optional[str] = None
+    ) -> UserReport:
+        """Generate a monthly report for a user."""
+        return self.generate_user_report(
+            user_email,
+            user_name,
+            year,
+            month,
+            user_data,
+            overtime_data,
+            report_type="monthly",
+            period_label=f"{year}-{month:02d}",
+            department=department
         )
     
     def generate_monthly_report(
@@ -67,8 +109,8 @@ class ReportGenerator:
     ) -> MonthlyReport:
         """Generate monthly report for a user."""
         
-        project_hours = user_data.get('project_hours', {})
         absence_breakdown = user_data.get('absence_breakdown', {})
+        total_absence_days = sum(absence_breakdown.values())
         
         return MonthlyReport(
             user_email=user_email,
@@ -76,15 +118,8 @@ class ReportGenerator:
             year=year,
             month=month,
             total_hours=user_data.get('total_hours', 0),
-            billable_hours=user_data.get('billable_hours', 0),
-            overtime_hours=0,  # Would need overtime calculation
-            vacation_days=absence_breakdown.get('vacation', 0),
-            sick_days=absence_breakdown.get('sick', 0),
-            personal_days=absence_breakdown.get('personal', 0),
-            other_absence_days=sum(v for k, v in absence_breakdown.items() if k not in ['vacation', 'sick', 'personal']),
-            project_hours=project_hours,
-            period_start=user_data.get('period_start'),
-            period_end=user_data.get('period_end'),
+            overtime_hours=0,
+            total_absence_days=total_absence_days,
             generated_at=datetime.now()
         )
     
@@ -107,8 +142,6 @@ class ReportGenerator:
             total_users=project_stats.get('total_users', 0),
             average_hours_per_user=project_stats.get('average_hours_per_user', 0),
             user_hours=project_stats.get('user_distribution', {}),
-            estimated_cost=None,  # Would need hourly rates
-            hourly_rate=None,  # Would need project-specific rates
             generated_at=datetime.now()
         )
     
@@ -131,13 +164,14 @@ class ReportGenerator:
                 continue
             
             # Generate user report
-            report = self.generate_user_report(
+            report = self.generate_monthly_user_report(
                 user_email=user.email,
                 user_name=user.display_name,
                 year=year,
                 month=month,
                 user_data=user_data,
-                overtime_data={}  # Would need overtime calculation
+                overtime_data={},  # Would need overtime calculation
+                department=user.department
             )
             
             reports.append(report)
@@ -171,35 +205,28 @@ class ReportGenerator:
         """Format user report as a summary string."""
         
         lines = []
-        lines.append(f"📊 Monthly Report - {report.user_name}")
+        lines.append(f"📊 {report.report_type.title()} Report - {report.user_name}")
         lines.append(f"📧 Email: {report.user_email}")
         lines.append(f"📅 Period: {report.period_string}")
         lines.append("")
         
         lines.append("⏰ Time Tracking:")
         lines.append(f"  • Total Hours: {report.total_hours:.1f}h")
-        lines.append(f"  • Billable Hours: {report.billable_hours:.1f}h")
-        lines.append(f"  • Non-billable Hours: {report.non_billable_hours:.1f}h")
         lines.append("")
         
-        if report.daily_overtime > 0 or report.weekly_overtime > 0 or report.monthly_overtime > 0:
+        if report.weekly_overtime > 0 or report.monthly_overtime > 0:
             lines.append("⏱️ Overtime:")
-            lines.append(f"  • Daily Overtime: {report.daily_overtime:.1f}h")
-            lines.append(f"  • Weekly Overtime: {report.weekly_overtime:.1f}h")
-            lines.append(f"  • Monthly Overtime: {report.monthly_overtime:.1f}h")
+            if report.weekly_overtime:
+                lines.append(f"  • Weekly Overtime: {report.weekly_overtime:.1f}h")
+            if report.monthly_overtime:
+                lines.append(f"  • Monthly Overtime: {report.monthly_overtime:.1f}h")
             lines.append("")
-        
-        lines.append("🏖️ Time Off:")
-        lines.append(f"  • Total Absence Days: {report.total_absence_days}")
-        for absence_type, days in report.absence_breakdown.items():
-            lines.append(f"  • {absence_type.title()}: {days} days")
-        lines.append("")
         
         if report.projects_worked:
             lines.append("📁 Projects Worked On:")
             lines.append(f"  • Total Projects: {len(report.projects_worked)}")
-            for project, hours in sorted(report.project_hours.items(), key=lambda x: x[1], reverse=True):
-                lines.append(f"  • {project}: {hours:.1f}h")
+            for project in report.projects_worked:
+                lines.append(f"  • {project}")
             lines.append("")
         
         if report.has_missing_entries:
@@ -231,12 +258,6 @@ class ReportGenerator:
         lines.append(f"  • Average Hours per User: {report.average_hours_per_user:.1f}h")
         lines.append("")
         
-        if report.estimated_cost:
-            lines.append(f"💰 Estimated Cost: ${report.estimated_cost:.2f}")
-        if report.hourly_rate:
-            lines.append(f"💵 Hourly Rate: ${report.hourly_rate:.2f}")
-        lines.append("")
-        
         if report.user_hours:
             lines.append("👥 User Contributions:")
             sorted_users = sorted(report.user_hours.items(), key=lambda x: x[1], reverse=True)
@@ -263,16 +284,12 @@ class ReportGenerator:
         
         # Summary statistics
         total_hours = sum(r.total_hours for r in reports)
-        total_billable = sum(r.billable_hours for r in reports)
         total_overtime = sum(r.monthly_overtime for r in reports)
-        total_absence_days = sum(r.total_absence_days for r in reports)
         total_missing_days = sum(len(r.missing_days) for r in reports)
         
         lines.append("📊 Summary Statistics:")
         lines.append(f"  • Total Hours: {total_hours:.1f}h")
-        lines.append(f"  • Billable Hours: {total_billable:.1f}h")
         lines.append(f"  • Total Overtime: {total_overtime:.1f}h")
-        lines.append(f"  • Total Absence Days: {total_absence_days}")
         lines.append(f"  • Total Missing Days: {total_missing_days}")
         lines.append(f"  • Average Hours per User: {total_hours / len(reports):.1f}h")
         lines.append("")
@@ -327,14 +344,11 @@ class ReportGenerator:
         # Summary statistics
         total_hours = sum(r.total_hours for r in reports)
         total_users = sum(r.total_users for r in reports)
-        total_cost = sum(r.estimated_cost for r in reports if r.estimated_cost)
         
         lines.append("📊 Project Summary:")
         lines.append(f"  • Total Hours: {total_hours:.1f}h")
         lines.append(f"  • Total Users: {total_users}")
         lines.append(f"  • Average Hours per Project: {total_hours / len(reports):.1f}h")
-        if total_cost:
-            lines.append(f"  • Total Estimated Cost: ${total_cost:.2f}")
         lines.append("")
         
         # Top projects by hours
@@ -350,14 +364,6 @@ class ReportGenerator:
         for i, report in enumerate(projects_by_users, 1):
             lines.append(f"  {i}. {report.project_name}: {report.total_users} users")
         lines.append("")
-        
-        # Cost analysis (if available)
-        cost_projects = [r for r in reports if r.estimated_cost]
-        if cost_projects:
-            lines.append("💰 Cost Analysis:")
-            for report in sorted(cost_projects, key=lambda x: x.estimated_cost, reverse=True):
-                lines.append(f"  • {report.project_name}: ${report.estimated_cost:.2f}")
-            lines.append("")
         
         lines.append(f"📅 Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
         

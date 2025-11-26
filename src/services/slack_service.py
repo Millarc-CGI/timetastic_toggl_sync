@@ -126,7 +126,7 @@ Need help? Contact your administrator or check the Toggl Track documentation.
         return self.send_dm(user_id, message)
     
     def send_monthly_report(self, user_email: str, report_data: Dict[str, Any]) -> bool:
-        """Send monthly report to user."""
+        """Send monthly/weekly report to user."""
         user = self.find_user_by_email(user_email)
         if not user:
             print(f"Slack user not found for email: {user_email}")
@@ -136,13 +136,14 @@ Need help? Contact your administrator or check the Toggl Track documentation.
         display_name = user.get('profile', {}).get('display_name', user_email)
         
         # Create message
-        period = report_data.get('period', 'Unknown')
+        period = report_data.get('period_label') or report_data.get('period') or 'Unknown'
+        report_type = report_data.get('report_type', 'monthly').title()
         total_hours = report_data.get('total_hours', 0)
-        overtime_hours = report_data.get('overtime_hours', 0)
-        vacation_days = report_data.get('vacation_days', 0)
-        sick_days = report_data.get('sick_days', 0)
+        weekly_ot = report_data.get('weekly_overtime', 0)
+        monthly_ot = report_data.get('monthly_overtime', 0)
+        missing_days = report_data.get('missing_days', [])
         
-        message = f"""📊 *Monthly Time Report - {period}*
+        message = f"""📊 *{report_type} Time Report - {period}*
 
 Hi {display_name}!
 
@@ -150,20 +151,27 @@ Here's your time tracking summary for {period}:
 
 ⏰ *Hours Worked*
 • Total Hours: {total_hours:.1f}h
-• Overtime: {overtime_hours:.1f}h
-
-🏖️ *Time Off*
-• Vacation Days: {vacation_days}
-• Sick Days: {sick_days}
-
 """
         
-        # Add project breakdown if available
-        project_hours = report_data.get('project_hours', {})
-        if project_hours:
-            message += "📁 *Project Breakdown*\n"
-            for project, hours in project_hours.items():
-                message += f"• {project}: {hours:.1f}h\n"
+        if weekly_ot or monthly_ot:
+            message += "\n⏱️ *Overtime*\n"
+            if weekly_ot:
+                message += f"• Weekly Overtime: {weekly_ot:.1f}h\n"
+            if monthly_ot:
+                message += f"• Monthly Overtime: {monthly_ot:.1f}h\n"
+        
+        projects = report_data.get('projects_worked', [])
+        if projects:
+            message += "\n📁 *Projects*\n"
+            for project in projects:
+                message += f"• {project}\n"
+        
+        if missing_days:
+            message += "\n⚠️ *Missing Entries*\n"
+            for day in missing_days[:5]:
+                message += f"• {day}\n"
+            if len(missing_days) > 5:
+                message += f"• ... and {len(missing_days) - 5} more\n"
         
         message += f"\n---\n*Generated on {datetime.now().strftime('%Y-%m-%d %H:%M')}*\n*This is an automated message from {self.bot_name}*"
         
