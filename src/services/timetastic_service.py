@@ -3,6 +3,7 @@ Timetastic API service.
 """
 
 import requests
+from dataclasses import replace
 from typing import List, Dict, Any, Optional
 from datetime import datetime, date
 
@@ -18,6 +19,7 @@ class TimetasticService:
         self.base_url = settings.timetastic_base_url
         self.token = settings.timetastic_api_token
         self._holidays_cache: Dict[str, List[Dict[str, Any]]] = {}
+        self._public_holidays_cache: Optional[List[Absence]] = None
         self._users_cache: Optional[List[Dict[str, Any]]] = None
         self._leave_types_cache: Optional[List[Dict[str, Any]]] = None
         self._departments_cache: Optional[List[Dict[str, Any]]] = None
@@ -220,7 +222,9 @@ class TimetasticService:
         end_date: str,
     ) -> List[Absence]:
         """Get holidays for specific user."""
-        return self.get_holidays(start_date, end_date, [user_id])
+        user_absences = self.get_holidays(start_date, end_date, [user_id])
+        public_holidays = self._filter_public_holidays_by_range(start_date, end_date, user_id)
+        return user_absences + public_holidays
     
     def get_departments(self) -> List[Dict[str, Any]]:
         """Get list of departments."""
@@ -246,6 +250,56 @@ class TimetasticService:
             return self._make_request(f"/users/{user_id}/allowance/{year}")
         except Exception:
             return {}
+
+    def get_public_holidays(self) -> List[Absence]:
+        """Fetch all configured public holidays for the account."""
+        if self._public_holidays_cache is not None:
+            return list(self._public_holidays_cache)
+
+        try:
+            data = self._make_request("/publicholidays")
+        except Exception as exc:
+            print(f"Warning: Failed to fetch Timetastic public holidays: {exc}")
+            return []
+
+        if isinstance(data, list):
+            records = data
+        else:
+            records = data.get("publicHolidays") or data.get("items") or []
+
+        holidays: List[Absence] = []
+        for record in records:
+            try:
+                holidays.append(Absence.from_public_holiday(record))
+            except Exception as exc:
+                print(f"Warning: Failed to parse public holiday {record.get('id', 'unknown')}: {exc}")
+
+        self._public_holidays_cache = holidays
+        return list(holidays)
+
+    def _filter_public_holidays_by_range(self, start_iso: str, end_iso: str, user_id: Optional[int]) -> List[Absence]:
+        """Return cached public holidays that fall within the requested date window."""
+        holidays = self.get_public_holidays()
+        start_date = self._parse_iso_to_date(start_iso)
+        end_date = self._parse_iso_to_date(end_iso)
+        if not start_date or not end_date:
+            return [
+                replace(holiday, user_id=user_id)
+                for holiday in holidays
+            ]
+
+        filtered: List[Absence] = []
+        for holiday in holidays:
+            if start_date <= holiday.start_date <= end_date:
+                filtered.append(replace(holiday, user_id=user_id))
+        return filtered
+
+    @staticmethod
+    def _parse_iso_to_date(value: str) -> Optional[date]:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+        except (ValueError, AttributeError):
+            return None
     
     def search_users(self, query: str) -> List[Dict[str, Any]]:
         """Search users by name or email."""

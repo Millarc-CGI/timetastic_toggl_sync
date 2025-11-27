@@ -37,6 +37,7 @@ class DataAggregator:
         }
         self.pto_like_types = {"pto", "medical appointment", "medical_appointment"}
         self.partial_pto_cap = 2.5
+        self.worked_absence_override_types = {"sick", "sick leave"}
     
     def aggregate_daily(
         self, 
@@ -76,8 +77,17 @@ class DataAggregator:
                     absence_review_notes.append(note)
             absence_entries.append(info)
 
-        # Calculate total hours (time entries + absence hours)
-        total_daily_hours = total_hours + absence_hours
+        treated_remote_absence = False
+        if self._should_override_absence_with_work(total_hours, absence_entries):
+            treated_remote_absence = True
+            absence_hours = 0.0
+            for entry in absence_entries:
+                if entry.get('absence_type') in self.worked_absence_override_types:
+                    entry['hours'] = 0.0
+                    entry['treated_as_remote'] = True
+            total_daily_hours = max(self.default_daily_hours, total_hours)
+        else:
+            total_daily_hours = total_hours + absence_hours
 
         # Project + task breakdown
         project_hours = defaultdict(float)
@@ -96,11 +106,10 @@ class DataAggregator:
                 project_task_hours_by_id[project_id][task_name] += entry.duration_hours
                 project_names_by_id[project_id] = project_name
 
-        has_holiday_absence = any(
-            'holiday' in (entry.get('absence_type') or '').lower()
-            for entry in absence_entries
+        has_public_holiday = any(
+            entry.get('is_public_holiday') for entry in absence_entries
         )
-        effective_weekend = is_weekend or has_holiday_absence
+        effective_weekend = is_weekend or has_public_holiday
 
         return {
             'date': target_date,
@@ -119,7 +128,7 @@ class DataAggregator:
             'has_absence': len(day_absences) > 0,
             'is_weekend': effective_weekend,
             'is_actual_weekend': is_weekend,
-            'is_public_holiday': has_holiday_absence,
+            'is_public_holiday': has_public_holiday,
             'weekend_hours': total_hours if effective_weekend else 0.0,
             'task_hours': {
                 project: dict(tasks) for project, tasks in project_task_hours.items()
@@ -128,7 +137,8 @@ class DataAggregator:
             'project_task_hours_by_id': {
                 project_id: dict(tasks) for project_id, tasks in project_task_hours_by_id.items()
             },
-            'project_names_by_id': project_names_by_id
+            'project_names_by_id': project_names_by_id,
+            'worked_absence_overridden': treated_remote_absence
         }
     
     def aggregate_monthly(
@@ -330,9 +340,11 @@ class DataAggregator:
     def _calculate_absence_hours_for_date(self, absence: Absence, target_date: date) -> float:
         """Determine how many hours of an absence apply to a specific date."""
         default_hours = self.default_daily_hours
-        absence_type = (absence.absence_type or "").lower()
         is_weekend = target_date.weekday() >= 5
-        is_public_holiday = "holiday" in absence_type
+        is_public_holiday = self._is_public_holiday_absence(absence)
+
+        if is_public_holiday:
+            return 0.0
 
         if is_weekend and not is_public_holiday:
             # Skip non-working weekend days
@@ -360,12 +372,15 @@ class DataAggregator:
 
     def _classify_absence(self, absence: Absence, target_date: date, current_total_hours: float) -> Optional[Dict[str, Any]]:
         absence_type = (absence.absence_type or "unknown").strip().lower()
+        is_public_holiday = self._is_public_holiday_absence(absence)
         if absence_type in self.remote_work_types:
             return None
 
         hours_for_day = self._calculate_absence_hours_for_date(absence, target_date)
-        if hours_for_day <= 0:
+        if hours_for_day <= 0 and not is_public_holiday:
             return None
+
+        is_full_day = self._is_full_day_absence(hours_for_day)
 
         entry: Dict[str, Any] = {
             'absence_type': absence_type,
@@ -375,9 +390,12 @@ class DataAggregator:
             'requires_review': False,
             'review_reason': None,
             'absence_id': absence.timetastic_id,
+            'is_public_holiday': is_public_holiday,
         }
 
-        if absence_type in self.full_day_types:
+        if is_public_holiday:
+            entry['hours'] = 0.0
+        elif absence_type in self.full_day_types and is_full_day:
             entry['hours'] = self.default_daily_hours
         elif absence_type in self.pto_like_types:
             adjusted, needs_review, note = self._adjust_pto_hours(absence, hours_for_day, current_total_hours)
@@ -386,7 +404,7 @@ class DataAggregator:
             entry['review_reason'] = note
         elif absence_type in self.absence_rules:
             rule = self.absence_rules[absence_type]
-            if rule == "DEFAULT_HOURS":
+            if rule == "DEFAULT_HOURS" and is_full_day:
                 entry['hours'] = self.default_daily_hours
             elif isinstance(rule, (int, float)):
                 entry['hours'] = float(rule)
@@ -417,6 +435,19 @@ class DataAggregator:
 
     def _is_full_day_absence(self, hours_for_day: float) -> bool:
         return hours_for_day >= (self.default_daily_hours - 0.25)
+
+    def _is_public_holiday_absence(self, absence: Absence) -> bool:
+        status = (absence.status or "").strip().lower()
+        absence_type = (absence.absence_type or "").strip().lower()
+        return status == "publicholiday" or absence_type == "public_holiday"
+
+    def _should_override_absence_with_work(self, worked_hours: float, absence_entries: List[Dict[str, Any]]) -> bool:
+        if worked_hours <= 0:
+            return False
+        for entry in absence_entries:
+            if entry.get('absence_type') in self.worked_absence_override_types:
+                return True
+        return False
 
     def _get_partial_day_fraction(self, absence: Absence, target_date: date) -> Optional[float]:
         """Infer if the absence only covers half a day."""

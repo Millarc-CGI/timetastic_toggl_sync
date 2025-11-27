@@ -94,7 +94,7 @@ class OvertimeCalculator:
                     'type': 'weekend',
                     'hours': weekend_hours
                 })
-                month_expected_increment = 0.0 if (is_actual_weekend and not is_public_holiday) else self.default_daily_hours
+                month_expected_increment = 0.0
             else:
                 overtime = self.calculate_daily_overtime(user_email, date_obj, total_hours)
                 daily_overtime_total += overtime

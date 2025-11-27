@@ -31,6 +31,10 @@ class ReportGenerator:
         """Generate detailed report for a specific user."""
         
         project_hours = user_data.get('project_hours', {})
+        project_tasks = {
+            project: dict(tasks)
+            for project, tasks in (user_data.get('project_task_hours') or {}).items()
+        }
         missing_days = user_data.get('missing_days', [])
         
         if not period_label and year and month:
@@ -48,6 +52,7 @@ class ReportGenerator:
             weekly_overtime=overtime_data.get('weekly_overtime', 0),
             monthly_overtime=overtime_data.get('monthly_overtime', 0),
             projects_worked=list(project_hours.keys()),
+            project_tasks=project_tasks,
             missing_days=missing_days,
             generated_at=datetime.now()
         )
@@ -181,8 +186,13 @@ class ReportGenerator:
         
         if report.projects_worked:
             lines.append("📁 Projects Worked On:")
+            task_map = report.project_tasks or {}
             for project in report.projects_worked:
                 lines.append(f"  • {project}")
+                tasks = task_map.get(project, {})
+                if tasks:
+                    for task_name, hours in sorted(tasks.items(), key=lambda x: x[0]):
+                        lines.append(f"      - {task_name}: {hours:.1f}h")
             lines.append("")
         
         if report.has_missing_entries:
@@ -193,8 +203,10 @@ class ReportGenerator:
             if len(report.missing_days) > 5:
                 lines.append(f"  • ... and {len(report.missing_days) - 5} more")
             lines.append("")
-        
-        lines.append(f"📅 Generated: {report.generated_at.strftime('%Y-%m-%d %H:%M')}")
+            if report.report_type in {"weekly", "monthly"}:
+                scope = "this past week" if report.report_type == "weekly" else "last month"
+                lines.append(f"⚠️ Please update Toggl for the missing days above so we can close {scope} on time.")
+                lines.append("")
         
         return "\n".join(lines)
     
@@ -252,8 +264,6 @@ class ReportGenerator:
                 avg_hours = stats['hours'] / stats['users'] if stats['users'] > 0 else 0
                 lines.append(f"  • {dept}: {stats['users']} users, {stats['hours']:.1f}h total, {avg_hours:.1f}h avg")
             lines.append("")
-        
-        lines.append(f"📅 Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
         
         return "\n".join(lines)
     

@@ -176,6 +176,24 @@ class Absence:
         )
 
     @classmethod
+    def from_public_holiday(cls, data: Dict[str, Any]) -> "Absence":
+        """Create an Absence-like object from a Timetastic public holiday record."""
+        holiday_date = cls._parse_iso_date(data.get("date") or data.get("Date"))
+        holiday_name = str(data.get("name") or data.get("Name") or "Public Holiday")
+
+        return cls(
+            timetastic_id=int(data.get("id", 0)),
+            absence_type="public_holiday",
+            start_date=holiday_date or date.today(),
+            end_date=holiday_date or date.today(),
+            status="PublicHoliday",
+            booking_unit="Days",
+            duration_value=1.0,
+            notes=f"Public holiday: {holiday_name}",
+            department=None,
+        )
+
+    @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Absence":
         """Create Absence from dictionary."""
         start_date = None
@@ -225,3 +243,15 @@ class Absence:
             created_at=created_at,
             updated_at=updated_at,
         )
+
+    @staticmethod
+    def _parse_iso_date(value: Optional[str]) -> Optional[date]:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+        except ValueError:
+            try:
+                return datetime.strptime(value.split("T")[0], "%Y-%m-%d").date()
+            except (ValueError, IndexError):
+                return None

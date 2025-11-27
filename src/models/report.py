@@ -62,6 +62,7 @@ class UserReport:
     
     # Project summary
     projects_worked: List[str] = None
+    project_tasks: Dict[str, Dict[str, float]] = None
     
     # Missing entries
     missing_days: List[date] = None
@@ -73,6 +74,8 @@ class UserReport:
         """Initialize default values after dataclass creation."""
         if self.projects_worked is None:
             self.projects_worked = []
+        if self.project_tasks is None:
+            self.project_tasks = {}
         if self.missing_days is None:
             self.missing_days = []
         if self.generated_at is None:
@@ -107,6 +110,7 @@ class UserReport:
             'weekly_overtime': self.weekly_overtime,
             'monthly_overtime': self.monthly_overtime,
             'projects_worked': self.projects_worked,
+            'project_tasks': self.project_tasks,
             'missing_days': [d.isoformat() for d in self.missing_days],
             'generated_at': self.generated_at.isoformat() if self.generated_at else None,
         }

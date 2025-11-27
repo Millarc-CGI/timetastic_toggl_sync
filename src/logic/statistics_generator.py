@@ -2,9 +2,14 @@
 Statistics generator for creating various statistical reports.
 """
 
+from pathlib import Path
 from typing import List, Dict, Any, Optional
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from collections import defaultdict
+
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font
+from openpyxl.utils import get_column_letter
 
 from ..config import Settings
 from ..models.user import User
@@ -245,6 +250,107 @@ class StatisticsGenerator:
             }
         
         return final_stats
+
+    def summarize_project_activity(
+        self,
+        projects: List[Project],
+        months: int = 6,
+        reference_date: Optional[date] = None
+    ) -> List[Dict[str, Any]]:
+        """Summarize project activity for the last N months using Toggl metadata."""
+        if not projects:
+            return []
+
+        today = reference_date or date.today()
+        months = max(1, months)
+        window_start = today - timedelta(days=months * 30)
+
+        records: List[Dict[str, Any]] = []
+        for project in projects:
+            start_date = project.start_date or (project.created_at.date() if project.created_at else None)
+            end_date = project.end_date
+            last_updated = project.updated_at.date() if project.updated_at else None
+            effective_end = end_date or last_updated or today
+            effective_start = start_date or (project.created_at.date() if project.created_at else effective_end)
+
+            if effective_end < window_start:
+                continue
+
+            duration_end = end_date or today
+            duration_days = None
+            if effective_start:
+                duration_days = (duration_end - effective_start).days + 1
+
+            status_label = "Active" if project.active else "Closed"
+
+            records.append({
+                'project_id': project.project_id,
+                'project_name': project.name,
+                'status': status_label,
+                'start_date': effective_start,
+                'end_date': end_date,
+                'duration_days': duration_days,
+                'last_updated': last_updated,
+                'active_within_window': True,
+            })
+
+        def sort_key(record: Dict[str, Any]) -> Any:
+            start_ord = (record.get('start_date') or date.min).toordinal()
+            return (0 if record.get('status') == 'Active' else 1, -start_ord, record.get('project_name', '').lower())
+
+        records.sort(key=sort_key)
+        return records
+
+    def export_project_activity_xlsx(
+        self,
+        records: List[Dict[str, Any]],
+        output_path: str | Path
+    ) -> str:
+        """Write project activity records to XLSX and return the path."""
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        headers = [
+            "Project Name",
+            "Status",
+            "Start Date",
+            "End Date",
+            "Duration (days)",
+            "Last Updated",
+        ]
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Project Activity"
+
+        # Header row styling
+        for col_idx, header in enumerate(headers, start=1):
+            cell = sheet.cell(row=1, column=col_idx, value=header)
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        for record in records:
+            sheet.append([
+                record.get("project_name"),
+                record.get("status"),
+                record.get("start_date").isoformat() if record.get("start_date") else "",
+                record.get("end_date").isoformat() if record.get("end_date") else "Ongoing",
+                record.get("duration_days"),
+                record.get("last_updated").isoformat() if record.get("last_updated") else "",
+            ])
+
+        # Auto-fit column widths within reasonable bounds
+        for column_idx in range(1, len(headers) + 1):
+            column_letter = get_column_letter(column_idx)
+            max_length = 0
+            for cell in sheet[column_letter]:
+                if cell.value is None:
+                    continue
+                max_length = max(max_length, len(str(cell.value)))
+            sheet.column_dimensions[column_letter].width = min(max(max_length + 2, 15), 60)
+
+        workbook.save(path)
+        return str(path)
     
     def generate_department_stats(
         self,
