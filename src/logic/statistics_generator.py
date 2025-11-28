@@ -3,9 +3,9 @@ Statistics generator for creating various statistical reports.
 """
 
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, date, timedelta
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
@@ -21,6 +21,154 @@ class StatisticsGenerator:
     
     def __init__(self, settings: Settings):
         self.settings = settings
+
+    @staticmethod
+    def normalize_project_key(name: Optional[str]) -> str:
+        return (name or "").strip().lower()
+
+    def _resolve_project_token(
+        self,
+        token: str,
+        by_id: Dict[int, Project],
+        by_name: Dict[str, Project],
+    ) -> Optional[Project]:
+        token = (token or "").strip()
+        if not token:
+            return None
+        project = None
+        try:
+            pid = int(token)
+            project = by_id.get(pid)
+        except ValueError:
+            project = by_name.get(self.normalize_project_key(token))
+        return project
+
+    def build_project_activity_map(
+        self,
+        projects: List[Project],
+        time_entries: List[Any],
+        lookback_start: date,
+        lookback_end: date,
+    ) -> Dict[int, Dict[str, Any]]:
+        """Return per-project stats (activity window + hours) within lookback."""
+        id_map = {p.project_id: p for p in projects if p.project_id is not None}
+        name_map = {
+            self.normalize_project_key(p.name): p
+            for p in projects
+            if p.name and p.project_id is not None
+        }
+        activity: Dict[int, Dict[str, Any]] = {}
+        for entry in time_entries:
+            project = id_map.get(entry.project_id)
+            if not project and entry.project_name:
+                project = name_map.get(self.normalize_project_key(entry.project_name))
+            if not project or not project.active:
+                continue
+            project_id = project.project_id
+            stat = activity.setdefault(
+                project_id,
+                {
+                    'project': project,
+                    'project_id': project_id,
+                    'start': None,
+                    'end': None,
+                    'total_hours': 0.0,
+                    'normalized_name': self.normalize_project_key(project.name or f"Project {project_id}"),
+                },
+            )
+            day = entry.date
+            if stat['start'] is None or day < stat['start']:
+                stat['start'] = day
+            if stat['end'] is None or day > stat['end']:
+                stat['end'] = day
+            stat['total_hours'] += entry.duration_hours
+        # Ensure start/end at least within lookback
+        for stat in activity.values():
+            if stat['start'] is None:
+                stat['start'] = lookback_start
+            if stat['end'] is None:
+                stat['end'] = lookback_end
+        return activity
+
+    @staticmethod
+    def build_project_windows(
+        selected_activity: List[Dict[str, Any]],
+        lookback_start: date,
+        lookback_end: date,
+    ) -> Dict[str, Dict[Any, Dict[str, date]]]:
+        """Return lookup tables for project windows."""
+        by_id: Dict[int, Dict[str, date]] = {}
+        by_name: Dict[str, Dict[str, date]] = {}
+        for item in selected_activity:
+            window_start = item.get('start') or lookback_start
+            window_end = item.get('end') or lookback_end
+            if window_end < window_start:
+                window_end = window_start
+            project_id = item['project_id']
+            normalized = item.get('normalized_name') or ""
+            window = {'start': window_start, 'end': window_end}
+            by_id[project_id] = window
+            if normalized:
+                by_name[normalized] = window
+        return {'by_id': by_id, 'by_name': by_name}
+
+    def filter_time_entries_for_projects(
+        self,
+        time_entries: List[Any],
+        windows: Dict[str, Dict[Any, Dict[str, date]]],
+    ) -> Tuple[List[Any], Counter]:
+        """Filter entries so they fall inside selected project windows."""
+        filtered: List[Any] = []
+        stats: Counter = Counter()
+        by_id = windows.get('by_id', {})
+        by_name = windows.get('by_name', {})
+        for entry in time_entries:
+            window = None
+            if entry.project_id is not None and entry.project_id in by_id:
+                window = by_id[entry.project_id]
+            elif entry.project_name:
+                normalized = self.normalize_project_key(entry.project_name)
+                window = by_name.get(normalized)
+            if not window:
+                stats['no_match'] += 1
+                continue
+            day = entry.date
+            if window['start'] <= day <= window['end']:
+                filtered.append(entry)
+                stats['match'] += 1
+            else:
+                stats['out_of_window'] += 1
+        return filtered, stats
+
+    def compute_project_precise_totals(
+        self,
+        entries_by_email: Dict[str, List[Any]],
+        project_info: Dict[str, Any],
+        default_start: date,
+        default_end: date,
+    ) -> Dict[str, float]:
+        """Roll raw Toggl durations per user for a project window."""
+        project_id = project_info.get('project_id')
+        normalized = project_info.get('normalized_name') or ""
+        window_start = project_info.get('start') or default_start
+        window_end = project_info.get('end') or default_end
+        precise: Dict[str, float] = {}
+        for email, entries in entries_by_email.items():
+            total = 0.0
+            for entry in entries:
+                day = entry.date
+                if day < window_start or day > window_end:
+                    continue
+                matches = False
+                if project_id is not None and entry.project_id == project_id:
+                    matches = True
+                elif normalized and self.normalize_project_key(entry.project_name) == normalized:
+                    matches = True
+                if matches:
+                    total += entry.duration_hours
+            if total > 0:
+                precise[email] = total
+        return precise
     
     def generate_user_stats(
         self,
@@ -301,29 +449,141 @@ class StatisticsGenerator:
         records.sort(key=sort_key)
         return records
 
-    def export_project_activity_xlsx(
+    def select_projects_by_tokens(
+        self,
+        projects: List[Project],
+        activity_map: Dict[int, Dict[str, Any]],
+        requested_tokens: Optional[List[str]],
+        default_limit: int,
+    ) -> Dict[str, Any]:
+        """Resolve requested projects (by ID or name) and report inactive/missing ones."""
+        project_by_id = {p.project_id: p for p in projects if p.project_id is not None}
+        project_by_name = {
+            self.normalize_project_key(p.name): p
+            for p in projects
+            if p.name and p.project_id is not None
+        }
+        activity_list = sorted(
+            activity_map.values(),
+            key=lambda item: item.get('start') or date.min,
+            reverse=True,
+        )
+
+        selected_activity: List[Dict[str, Any]] = []
+        inactive_projects: List[Project] = []
+        missing_tokens: List[str] = []
+        no_entries_projects: List[Project] = []
+        seen_ids: set[int] = set()
+
+        tokens = requested_tokens or []
+        if tokens:
+            for token in tokens:
+                project = self._resolve_project_token(token, project_by_id, project_by_name)
+                if not project:
+                    missing_tokens.append(token)
+                    continue
+                if not project.active:
+                    inactive_projects.append(project)
+                    continue
+                if project.project_id in seen_ids:
+                    continue
+                activity = activity_map.get(project.project_id)
+                if not activity:
+                    no_entries_projects.append(project)
+                    continue
+                selected_activity.append(activity)
+                seen_ids.add(project.project_id)
+        else:
+            for activity in activity_list[: default_limit or 3]:
+                selected_activity.append(activity)
+
+        return {
+            'selected_activity': selected_activity,
+            'activity_list': activity_list,
+            'inactive_projects': inactive_projects,
+            'missing_tokens': missing_tokens,
+            'no_entries_projects': no_entries_projects,
+        }
+
+    def generate_user_project_task_stats(
+        self,
+        all_user_data: Dict[str, Dict[str, Any]],
+        users: List[User],
+        overtime_data: Dict[str, Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Build per-user/project/task statistics with overtime allocation."""
+        user_lookup = {user.email.lower(): user for user in users}
+        rows: List[Dict[str, Any]] = []
+
+        for user_email, user_snapshot in all_user_data.items():
+            user = user_lookup.get(user_email)
+            user_name = user.display_name if user else user_email
+            user_rows = self._build_user_project_task_rows(
+                user_email,
+                user_name,
+                user_snapshot,
+                overtime_data.get(user_email, {}),
+                project_filter=None,
+                start_date=None,
+                end_date=None,
+            )
+            rows.extend(user_rows)
+
+        return rows
+
+    def generate_project_specific_stats(
+        self,
+        all_user_data: Dict[str, Dict[str, Any]],
+        users: List[User],
+        overtime_data: Dict[str, Dict[str, Any]],
+        project_name: str,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+    ) -> List[Dict[str, Any]]:
+        """Generate statistics for a specific project window."""
+        user_lookup = {user.email.lower(): user for user in users}
+        rows: List[Dict[str, Any]] = []
+
+        normalized_project = self._canonical_project_key(project_name)
+
+        for user_email, user_snapshot in all_user_data.items():
+            user = user_lookup.get(user_email)
+            user_name = user.display_name if user else user_email
+            user_rows = self._build_user_project_task_rows(
+                user_email,
+                user_name,
+                user_snapshot,
+                overtime_data.get(user_email, {}),
+                project_filter=normalized_project,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            rows.extend(user_rows)
+
+        return rows
+
+    def export_user_project_task_xlsx(
         self,
         records: List[Dict[str, Any]],
         output_path: str | Path
     ) -> str:
-        """Write project activity records to XLSX and return the path."""
+        """Export user/project/task statistics to XLSX and return the path."""
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
         headers = [
-            "Project Name",
-            "Status",
-            "Start Date",
-            "End Date",
-            "Duration (days)",
-            "Last Updated",
+            "User",
+            "Project",
+            "Tasks",
+            "Total Hours",
+            "Normal Overtime",
+            "Weekend Overtime",
         ]
 
         workbook = Workbook()
         sheet = workbook.active
-        sheet.title = "Project Activity"
+        sheet.title = "User Project Stats"
 
-        # Header row styling
         for col_idx, header in enumerate(headers, start=1):
             cell = sheet.cell(row=1, column=col_idx, value=header)
             cell.font = Font(bold=True)
@@ -331,15 +591,14 @@ class StatisticsGenerator:
 
         for record in records:
             sheet.append([
-                record.get("project_name"),
-                record.get("status"),
-                record.get("start_date").isoformat() if record.get("start_date") else "",
-                record.get("end_date").isoformat() if record.get("end_date") else "Ongoing",
-                record.get("duration_days"),
-                record.get("last_updated").isoformat() if record.get("last_updated") else "",
+                record.get("user_name") or record.get("user_email"),
+                record.get("project"),
+                record.get("tasks_text") or record.get("task"),
+                round(record.get("total_hours", 0.0), 2),
+                round(record.get("normal_overtime", 0.0), 2),
+                round(record.get("weekend_overtime", 0.0), 2),
             ])
 
-        # Auto-fit column widths within reasonable bounds
         for column_idx in range(1, len(headers) + 1):
             column_letter = get_column_letter(column_idx)
             max_length = 0
@@ -347,10 +606,128 @@ class StatisticsGenerator:
                 if cell.value is None:
                     continue
                 max_length = max(max_length, len(str(cell.value)))
-            sheet.column_dimensions[column_letter].width = min(max(max_length + 2, 15), 60)
+            sheet.column_dimensions[column_letter].width = min(max(max_length + 2, 12), 60)
 
         workbook.save(path)
         return str(path)
+
+    def _build_user_project_task_rows(
+        self,
+        user_email: str,
+        user_name: str,
+        user_data: Dict[str, Any],
+        overtime_data: Dict[str, Any],
+        project_filter: Optional[str],
+        start_date: Optional[date],
+        end_date: Optional[date],
+    ) -> List[Dict[str, Any]]:
+        """Convert daily data + overtime info into per-project/task rows."""
+        store: Dict[str, Dict[str, Any]] = defaultdict(
+            lambda: {
+                'total_hours': 0.0,
+                'normal_overtime': 0.0,
+                'weekend_overtime': 0.0,
+                'task_hours': defaultdict(float),
+            }
+        )
+        daily_data = user_data.get('daily_data') or []
+        normalized_filter = project_filter
+
+        overtime_lookup: Dict[date, Dict[str, float]] = defaultdict(lambda: {'weekday': 0.0, 'weekend': 0.0})
+        for item in (overtime_data.get('daily_breakdown') or []):
+            day = item.get('date')
+            if not day:
+                continue
+            if item.get('type') == 'weekday':
+                overtime_lookup[day]['weekday'] += item.get('hours', 0.0)
+            else:
+                overtime_lookup[day]['weekend'] += item.get('hours', 0.0)
+
+        for day in daily_data:
+            day_date = day.get('date')
+            if start_date and day_date and day_date < start_date:
+                continue
+            if end_date and day_date and day_date > end_date:
+                continue
+
+            project_hours = day.get('project_hours') or {}
+            if not project_hours:
+                continue
+            total_project_hours = sum(project_hours.values())
+            if total_project_hours <= 0:
+                continue
+
+            project_task_hours = day.get('task_hours') or {}
+            day_ot = overtime_lookup.get(day.get('date'), {})
+            normal_total = day_ot.get('weekday', 0.0)
+            weekend_total = day_ot.get('weekend', 0.0)
+
+            for project_name, hours in project_hours.items():
+                if hours <= 0:
+                    continue
+                project_key = self._canonical_project_key(project_name)
+                if normalized_filter and project_key != normalized_filter:
+                    continue
+                display_project = self._display_project_name(project_name)
+                project_entry = store[display_project]
+                normal_share = normal_total * (hours / total_project_hours) if total_project_hours > 0 else 0.0
+                weekend_share = weekend_total * (hours / total_project_hours) if total_project_hours > 0 else 0.0
+                project_entry['total_hours'] += hours
+                project_entry['normal_overtime'] += normal_share
+                project_entry['weekend_overtime'] += weekend_share
+
+                tasks_for_project = (
+                    project_task_hours.get(project_name)
+                    or project_task_hours.get(display_project)
+                    or {}
+                )
+                task_total = sum(tasks_for_project.values()) if tasks_for_project else 0.0
+                task_bucket = project_entry['task_hours']
+
+                if tasks_for_project:
+                    for task_name, task_hours in tasks_for_project.items():
+                        if task_hours <= 0:
+                            continue
+                        task_bucket[task_name or "No Task"] += task_hours
+                    remainder = max(0.0, hours - task_total)
+                    if remainder > 1e-3:
+                        task_bucket["No Task"] += remainder
+                else:
+                    task_bucket["No Task"] += hours
+
+        results: List[Dict[str, Any]] = []
+        for project, metrics in store.items():
+            if (
+                metrics['total_hours'] <= 0
+                and metrics['normal_overtime'] <= 0
+                and metrics['weekend_overtime'] <= 0
+            ):
+                continue
+            task_hours_map = metrics.get('task_hours', {})
+            task_names = sorted(task_hours_map.keys(), key=lambda key: task_hours_map[key], reverse=True)
+            tasks_text = ", ".join(task_names) if task_names else "No Task"
+            results.append({
+                'user_email': user_email,
+                'user_name': user_name,
+                'project': project,
+                'task': tasks_text,
+                'tasks': task_names,
+                'tasks_text': tasks_text,
+                'total_hours': metrics['total_hours'],
+                'normal_overtime': metrics['normal_overtime'],
+                'weekend_overtime': metrics['weekend_overtime'],
+            })
+        return results
+
+    @staticmethod
+    def _canonical_project_key(project: Optional[str]) -> str:
+        normalized = (project or "").strip().lower()
+        return normalized or "no project"
+
+    @staticmethod
+    def _display_project_name(project: Optional[str]) -> str:
+        text = (project or "").strip()
+        return text or "No Project"
     
     def generate_department_stats(
         self,

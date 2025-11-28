@@ -2,6 +2,8 @@
 Timetastic API service.
 """
 
+import json
+from pathlib import Path
 import requests
 from dataclasses import replace
 from typing import List, Dict, Any, Optional
@@ -23,6 +25,12 @@ class TimetasticService:
         self._users_cache: Optional[List[Dict[str, Any]]] = None
         self._leave_types_cache: Optional[List[Dict[str, Any]]] = None
         self._departments_cache: Optional[List[Dict[str, Any]]] = None
+        self.cache_dir = Path(settings.cache_dir).expanduser()
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._timetastic_cache_dir = self.cache_dir / "timetastic"
+        self._timetastic_cache_dir.mkdir(parents=True, exist_ok=True)
+        self._holidays_cache_dir = self._timetastic_cache_dir / "holidays"
+        self._holidays_cache_dir.mkdir(parents=True, exist_ok=True)
     
     def _auth_header(self) -> Dict[str, str]:
         """Generate Timetastic API authentication header."""
@@ -121,37 +129,49 @@ class TimetasticService:
             "End": end_date,
         }
         cache_key = f"{start_date}|{end_date}"
-        
-        cached = self._holidays_cache.get(cache_key)
-        if cached is not None:
-            raw_holidays = cached
-        else:
-            # Fetch holidays with pagination
-            raw_holidays = []
-            page = 1
-            
-            while True:
-                params_with_page = {**params, "PageNumber": page}
-                data = self._make_request("/holidays", params=params_with_page)
+        start_obj = self._parse_iso_to_date(start_date)
+        end_obj = self._parse_iso_to_date(end_date)
+        cacheable = self._is_cacheable_range(start_obj, end_obj)
+        disk_cache_path: Optional[Path] = None
+        raw_holidays: List[Dict[str, Any]] = []
+        if cacheable and start_obj and end_obj:
+            disk_cache_path = self._holidays_cache_path(start_obj, end_obj)
+            disk_payload = self._load_cached_holidays(disk_cache_path)
+            if disk_payload is not None:
+                raw_holidays = disk_payload
+                self._holidays_cache[cache_key] = raw_holidays
+
+        if not raw_holidays:
+            cached = self._holidays_cache.get(cache_key)
+            if cached is not None:
+                raw_holidays = cached
+            else:
+                # Fetch holidays with pagination
+                raw_holidays = []
+                page = 1
                 
-                # Handle different response formats
-                if isinstance(data, list):
-                    holidays = data
-                else:
-                    holidays = data.get("holidays", []) or data.get("items", [])
+                while True:
+                    params_with_page = {**params, "PageNumber": page}
+                    data = self._make_request("/holidays", params=params_with_page)
+                    
+                    if isinstance(data, list):
+                        holidays = data
+                    else:
+                        holidays = data.get("holidays", []) or data.get("items", [])
+                    
+                    if not holidays:
+                        break
+                    
+                    raw_holidays.extend(holidays)
+                    
+                    if len(holidays) < 100:
+                        break
+                    
+                    page += 1
                 
-                if not holidays:
-                    break
-                
-                raw_holidays.extend(holidays)
-                
-                # If we got fewer holidays than requested, we're done
-                if len(holidays) < 100:
-                    break
-                
-                page += 1
-            
-            self._holidays_cache[cache_key] = raw_holidays
+                self._holidays_cache[cache_key] = raw_holidays
+                if cacheable and disk_cache_path:
+                    self._store_cached_holidays(disk_cache_path, raw_holidays)
         
         filtered_holidays = self._filter_holidays_by_users(raw_holidays, user_ids)
         
@@ -193,11 +213,37 @@ class TimetasticService:
                 uid_int = int(uid) if uid is not None else None
             except (TypeError, ValueError):
                 uid_int = None
-            
+
             if uid_int in requested_ids:
                 filtered.append(entry)
-        
+
         return filtered
+
+    def _holidays_cache_path(self, start: date, end: date) -> Path:
+        return self._holidays_cache_dir / f"{start:%Y%m%d}_{end:%Y%m%d}.json"
+
+    @staticmethod
+    def _is_cacheable_range(start: Optional[date], end: Optional[date]) -> bool:
+        if not start or not end:
+            return False
+        first_of_month = date.today().replace(day=1)
+        return end < first_of_month
+
+    def _load_cached_holidays(self, path: Path) -> Optional[List[Dict[str, Any]]]:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except FileNotFoundError:
+            return None
+        except Exception:
+            return None
+
+    def _store_cached_holidays(self, path: Path, payload: List[Dict[str, Any]]) -> None:
+        try:
+            with path.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+        except Exception:
+            pass
     
     def get_leave_types(self) -> List[Dict[str, Any]]:
         """Get list of available leave types."""

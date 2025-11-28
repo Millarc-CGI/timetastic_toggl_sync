@@ -3,9 +3,11 @@ Toggl Track API service.
 """
 
 import base64
+import json
+from pathlib import Path
 import requests
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, date
 
 from ..config import Settings
 from ..models.time_entry import TimeEntry
@@ -23,6 +25,10 @@ class TogglService:
         self.workspace_id = settings.workspace_id
         self._project_cache: Dict[str, Dict[int, str]] = {}
         self._task_cache: Dict[str, Dict[int, Dict[int, str]]] = {}
+        self.cache_dir = Path(settings.cache_dir).expanduser()
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._toggl_cache_dir = self.cache_dir / "toggl"
+        self._toggl_cache_dir.mkdir(parents=True, exist_ok=True)
     
     def _auth_header(self) -> Dict[str, str]:
         """Generate Toggl API authentication header."""
@@ -183,51 +189,64 @@ class TogglService:
             user_ids: Optional list of Toggl user IDs to filter
         """
         workspace = workspace_id or self.workspace_id
-        entries_data: Any = []
-        if workspace:
-            # Prefer Reports API v3 for workspace-wide queries
-            def _date_only(value: Optional[str]) -> Optional[str]:
-                if not value:
-                    return value
-                return value.split("T")[0]
+        start_day = self._parse_iso_to_date(start_date)
+        end_day = self._parse_iso_to_date(end_date)
+        cacheable = self._is_cacheable_range(start_day, end_day)
+        cache_path: Optional[Path] = None
+        normalized_entries: Optional[List[Dict[str, Any]]] = None
+        if cacheable and start_day and end_day:
+            cache_path = self._cache_file_path(workspace, start_day, end_day)
+            cached_payload = self._load_cached_entries(cache_path)
+            if cached_payload is not None:
+                normalized_entries = cached_payload
 
-            request_bodies: List[Dict[str, Any]] = [
-                {
-                    "start_date": _date_only(start_date),
-                    "end_date": _date_only(end_date),
-                    "page_size": 1000,
-                },
-                {
-                    "start_time": start_date,
-                    "end_time": end_date,
-                    "page_size": 1000,
-                },
-            ]
+        raw_entries: Any = []
+        if normalized_entries is None:
+            entries_data: Any = []
+            if workspace:
+                # Prefer Reports API v3 for workspace-wide queries
+                def _date_only(value: Optional[str]) -> Optional[str]:
+                    if not value:
+                        return value
+                    return value.split("T")[0]
 
-            data: Any = None
-            last_error: Optional[Exception] = None
-            for body in request_bodies:
-                try:
-                    data = self._post_reports(f"/workspace/{workspace}/search/time_entries", body)
-                    if data is not None:
-                        break
-                except Exception as exc:
-                    last_error = exc
+                request_bodies: List[Dict[str, Any]] = [
+                    {
+                        "start_date": _date_only(start_date),
+                        "end_date": _date_only(end_date),
+                        "page_size": 1000,
+                    },
+                    {
+                        "start_time": start_date,
+                        "end_time": end_date,
+                        "page_size": 1000,
+                    },
+                ]
 
-            if data is None:
-                raise last_error if last_error else Exception("Failed to fetch data from Toggl Reports API")
+                data: Any = None
+                last_error: Optional[Exception] = None
+                for body in request_bodies:
+                    try:
+                        data = self._post_reports(f"/workspace/{workspace}/search/time_entries", body)
+                        if data is not None:
+                            break
+                    except Exception as exc:
+                        last_error = exc
 
-            if isinstance(data, dict):
-                # Common shape: { "time_entries": [ ... ], ... }
-                entries_data = data.get("time_entries") or data.get("data") or []
+                if data is None:
+                    raise last_error if last_error else Exception("Failed to fetch data from Toggl Reports API")
+
+                if isinstance(data, dict):
+                    entries_data = data.get("time_entries") or data.get("data") or []
+                else:
+                    entries_data = data or []
             else:
-                entries_data = data or []
-        else:
-            # No workspace provided; use current user endpoint (only current user data allowed)
-            params = {"start_date": start_date, "end_date": end_date}
-            entries_data = self._make_request("/me/time_entries", params)
+                params = {"start_date": start_date, "end_date": end_date}
+                entries_data = self._make_request("/me/time_entries", params)
 
-        raw_entries = entries_data or []
+            raw_entries = entries_data or []
+        else:
+            raw_entries = normalized_entries
 
         # Filter by user_id locally if requested (Reports API returns all users)
         if user_ids:
@@ -249,65 +268,68 @@ class TogglService:
                     filtered.append(entry_data)
             raw_entries = filtered
 
-        # Normalize Reports API payload (often nested under 'time_entry' or 'time_entries')
-        normalized_entries: List[Dict[str, Any]] = []
+        if normalized_entries is None:
+            normalized_entries = []
 
-        def _append_normalized(entry: Dict[str, Any]) -> None:
-            if "duration" not in entry and "seconds" in entry:
-                entry.setdefault("duration", entry.get("seconds"))
-            if "id" not in entry and "time_entry_id" in entry:
-                entry["id"] = entry["time_entry_id"]
-            if "id" not in entry:
-                return
-            normalized_entries.append(entry)
+            def _append_normalized(entry: Dict[str, Any]) -> None:
+                if "duration" not in entry and "seconds" in entry:
+                    entry.setdefault("duration", entry.get("seconds"))
+                if "id" not in entry and "time_entry_id" in entry:
+                    entry["id"] = entry["time_entry_id"]
+                if "id" not in entry:
+                    return
+                normalized_entries.append(entry)
 
-        for entry_data in raw_entries:
-            if not isinstance(entry_data, dict):
-                continue
+            for entry_data in raw_entries:
+                if not isinstance(entry_data, dict):
+                    continue
 
-            if "time_entry" in entry_data:
-                time_entry_data = entry_data.get("time_entry") or {}
-                base = dict(time_entry_data)
-                project_info = entry_data.get("project")
-                if isinstance(project_info, dict):
-                    base.setdefault("project_id", project_info.get("id"))
-                    base.setdefault("project_name", project_info.get("name"))
-                task_info = entry_data.get("task")
-                if isinstance(task_info, dict):
-                    base.setdefault("task_id", task_info.get("id"))
-                    base.setdefault("task_name", task_info.get("name"))
-                user_info = entry_data.get("user")
-                if isinstance(user_info, dict):
-                    base.setdefault("user_id", user_info.get("id"))
-                    base.setdefault("user_email", user_info.get("email"))
+                if "time_entry" in entry_data:
+                    time_entry_data = entry_data.get("time_entry") or {}
+                    base = dict(time_entry_data)
+                    project_info = entry_data.get("project")
+                    if isinstance(project_info, dict):
+                        base.setdefault("project_id", project_info.get("id"))
+                        base.setdefault("project_name", project_info.get("name"))
+                    task_info = entry_data.get("task")
+                    if isinstance(task_info, dict):
+                        base.setdefault("task_id", task_info.get("id"))
+                        base.setdefault("task_name", task_info.get("name"))
+                    user_info = entry_data.get("user")
+                    if isinstance(user_info, dict):
+                        base.setdefault("user_id", user_info.get("id"))
+                        base.setdefault("user_email", user_info.get("email"))
+                    _append_normalized(base)
+                    continue
+
+                time_entries_list = entry_data.get("time_entries") if isinstance(entry_data, dict) else None
+                if isinstance(time_entries_list, list) and time_entries_list:
+                    base_info = dict(entry_data)
+                    base_info.pop("time_entries", None)
+                    for sub_entry in time_entries_list:
+                        if not isinstance(sub_entry, dict):
+                            continue
+                        child = dict(base_info)
+                        sub_id = sub_entry.get("id") or sub_entry.get("time_entry_id")
+                        if sub_id is not None:
+                            child["id"] = sub_id
+                        if "seconds" in sub_entry:
+                            child["seconds"] = sub_entry.get("seconds")
+                            child.setdefault("duration", sub_entry.get("seconds"))
+                        if sub_entry.get("start"):
+                            child["start"] = sub_entry.get("start")
+                        if sub_entry.get("stop"):
+                            child["stop"] = sub_entry.get("stop")
+                        if sub_entry.get("at"):
+                            child.setdefault("updated_at", sub_entry.get("at"))
+                        _append_normalized(child)
+                    continue
+
+                base = dict(entry_data)
                 _append_normalized(base)
-                continue
 
-            time_entries_list = entry_data.get("time_entries") if isinstance(entry_data, dict) else None
-            if isinstance(time_entries_list, list) and time_entries_list:
-                base_info = dict(entry_data)
-                base_info.pop("time_entries", None)
-                for sub_entry in time_entries_list:
-                    if not isinstance(sub_entry, dict):
-                        continue
-                    child = dict(base_info)
-                    sub_id = sub_entry.get("id") or sub_entry.get("time_entry_id")
-                    if sub_id is not None:
-                        child["id"] = sub_id
-                    if "seconds" in sub_entry:
-                        child["seconds"] = sub_entry.get("seconds")
-                        child.setdefault("duration", sub_entry.get("seconds"))
-                    if sub_entry.get("start"):
-                        child["start"] = sub_entry.get("start")
-                    if sub_entry.get("stop"):
-                        child["stop"] = sub_entry.get("stop")
-                    if sub_entry.get("at"):
-                        child.setdefault("updated_at", sub_entry.get("at"))
-                    _append_normalized(child)
-                continue
-
-            base = dict(entry_data)
-            _append_normalized(base)
+            if cacheable and cache_path and normalized_entries:
+                self._store_cached_entries(cache_path, normalized_entries)
 
         if workspace:
             for entry in normalized_entries:
@@ -350,6 +372,44 @@ class TogglService:
                 continue
 
         return entries
+
+    def _cache_file_path(self, workspace: Optional[Any], start: date, end: date) -> Path:
+        workspace_key = str(workspace or self.workspace_id or "default")
+        workspace_dir = self._toggl_cache_dir / workspace_key
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        return workspace_dir / f"{start:%Y%m%d}_{end:%Y%m%d}.json"
+
+    @staticmethod
+    def _parse_iso_to_date(value: Optional[str]) -> Optional[date]:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _is_cacheable_range(start: Optional[date], end: Optional[date]) -> bool:
+        if not start or not end:
+            return False
+        first_day_current = date.today().replace(day=1)
+        return end < first_day_current
+
+    def _load_cached_entries(self, path: Path) -> Optional[List[Dict[str, Any]]]:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except FileNotFoundError:
+            return None
+        except Exception:
+            return None
+
+    def _store_cached_entries(self, path: Path, entries: List[Dict[str, Any]]) -> None:
+        try:
+            with path.open("w", encoding="utf-8") as handle:
+                json.dump(entries, handle)
+        except Exception:
+            pass
 
     # Convenience wrappers using timezone-aware ranges
     def get_time_entries_last_week(self, user_ids: Optional[List[int]] = None) -> List[TimeEntry]:

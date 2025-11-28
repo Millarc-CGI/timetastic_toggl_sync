@@ -63,6 +63,7 @@ class Settings:
     # Storage and Exports
     exports_dir: str
     database_path: str
+    cache_dir: str
     
     # Slack Configuration
     slack_bot_token: str
@@ -71,6 +72,7 @@ class Settings:
     slack_org_email_domain: str
     slack_notification_day: str
     slack_notification_time: str
+    slack_signing_secret: str
     
     # Access Control
     admin_emails: Set[str]
@@ -134,6 +136,7 @@ def load_settings() -> Settings:
         # Storage and Exports
         exports_dir=os.getenv("EXPORTS_DIR", "./exports").strip(),
         database_path=os.getenv("DATABASE_PATH", "./data/sync.db").strip(),
+        cache_dir=os.getenv("CACHE_DIR", "./cache").strip(),
         
         # Slack Configuration
         slack_bot_token=os.getenv("SLACK_BOT_TOKEN", "").strip(),
@@ -142,7 +145,7 @@ def load_settings() -> Settings:
         slack_org_email_domain=os.getenv("SLACK_ORG_EMAIL_DOMAIN", "millarcgroup.slack.com").strip(),
         slack_notification_day=os.getenv("SLACK_NOTIFICATION_DAY", "Friday").strip(),
         slack_notification_time=os.getenv("SLACK_NOTIFICATION_TIME", "09:00").strip(),
-        
+        slack_signing_secret=os.getenv("SLACK_SIGNING_SECRET", "").strip(), 
         # Access Control
         admin_emails=_split_csv_set(os.getenv("ADMIN_EMAILS", "")),
         producer_emails=_split_csv_set(os.getenv("PRODUCER_EMAILS", "")),
