@@ -4,10 +4,11 @@ Toggl Track API service.
 
 import base64
 import json
+import hashlib
 from pathlib import Path
 import requests
 from typing import List, Dict, Any, Optional
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 from ..config import Settings
 from ..models.time_entry import TimeEntry
@@ -17,7 +18,7 @@ from ..logic.date_ranges import last_week_range, last_month_range, current_week_
 class TogglService:
     """Service for interacting with Toggl Track API."""
     
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, storage: Optional[Any] = None):
         self.settings = settings
         self.base_url = settings.toggl_base_url
         self.reports_base_url = settings.toggl_reports_base_url
@@ -29,6 +30,7 @@ class TogglService:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._toggl_cache_dir = self.cache_dir / "toggl"
         self._toggl_cache_dir.mkdir(parents=True, exist_ok=True)
+        self.storage = storage  # SQLiteStorage instance for cache metadata
     
     def _auth_header(self) -> Dict[str, str]:
         """Generate Toggl API authentication header."""
@@ -53,6 +55,7 @@ class TogglService:
     def _post_reports(self, endpoint: str, json_body: Dict[str, Any]) -> Any:
         """POST to Toggl Reports API (v3)."""
         url = f"{self.reports_base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+        
         try:
             response = requests.post(url, headers=self._auth_header(), json=json_body, timeout=120)
             response.raise_for_status()
@@ -101,7 +104,7 @@ class TogglService:
         return self._make_request(f"/workspaces/{workspace}/projects/{project_id}/tasks")
 
     def _lookup_project_name(self, workspace: Optional[int], project_id: Optional[int]) -> Optional[str]:
-        """Resolve project name using a per-workspace cache."""
+        """Resolve project name using a per-workspace cache. Projects should be pre-loaded."""
         if workspace is None or project_id is None:
             return None
         try:
@@ -110,30 +113,32 @@ class TogglService:
             return None
 
         workspace_key = str(workspace)
-        cache = self._project_cache.setdefault(workspace_key, {})
+        cache = self._project_cache.get(workspace_key, {})
+        
+        # Check cache first - projects should be pre-loaded
         if project_id_int in cache:
             return cache[project_id_int]
-
-        try:
-            workspace_param = int(workspace)
-        except (TypeError, ValueError):
-            return None
-
-        try:
-            projects = self.get_projects(workspace_param)
-        except Exception:
-            return None
-
-        for project in projects or []:
-            pid = project.get("id")
-            name = project.get("name")
+        
+        # Fallback: if cache is empty (shouldn't happen if pre-loading worked), try to load
+        # This is a safety net in case pre-loading failed
+        if not cache:
             try:
-                pid_int = int(pid)
-            except (TypeError, ValueError):
-                continue
-            cache[pid_int] = name
-
-        return cache.get(project_id_int)
+                workspace_param = int(workspace)
+                projects = self.get_projects(workspace_param)
+                cache = self._project_cache.setdefault(workspace_key, {})
+                for project in projects or []:
+                    pid = project.get("id")
+                    name = project.get("name")
+                    try:
+                        pid_int = int(pid)
+                    except (TypeError, ValueError):
+                        continue
+                    cache[pid_int] = name
+                return cache.get(project_id_int)
+            except Exception:
+                return None
+        
+        return None  # Project not found in cache
 
     def _lookup_task_name(
         self,
@@ -141,7 +146,7 @@ class TogglService:
         project_id: Optional[int],
         task_id: Optional[int],
     ) -> Optional[str]:
-        """Resolve task name using a project-scoped cache."""
+        """Resolve task name using a project-scoped cache. Tasks should be pre-loaded."""
         if workspace is None or project_id is None or task_id is None:
             return None
         try:
@@ -151,26 +156,33 @@ class TogglService:
         except (TypeError, ValueError):
             return None
 
-        project_cache = self._task_cache.setdefault(workspace_key, {})
-        task_cache = project_cache.setdefault(project_id_int, {})
+        project_cache = self._task_cache.get(workspace_key, {})
+        task_cache = project_cache.get(project_id_int, {})
+        
+        # Check cache first - tasks should be pre-loaded
         if task_id_int in task_cache:
             return task_cache[task_id_int]
-
-        try:
-            tasks = self.get_project_tasks(project_id_int, int(workspace))
-        except Exception:
-            return None
-
-        for task in tasks or []:
-            tid = task.get("id")
-            name = task.get("name")
+        
+        # Fallback: if cache is empty (shouldn't happen if pre-loading worked), try to load
+        # This is a safety net in case pre-loading failed
+        if not task_cache:
             try:
-                tid_int = int(tid)
-            except (TypeError, ValueError):
-                continue
-            task_cache[tid_int] = name
-
-        return task_cache.get(task_id_int)
+                tasks = self.get_project_tasks(project_id_int, int(workspace))
+                project_cache = self._task_cache.setdefault(workspace_key, {})
+                task_cache = project_cache.setdefault(project_id_int, {})
+                for task in tasks or []:
+                    tid = task.get("id")
+                    name = task.get("name")
+                    try:
+                        tid_int = int(tid)
+                    except (TypeError, ValueError):
+                        continue
+                    task_cache[tid_int] = name
+                return task_cache.get(task_id_int)
+            except Exception:
+                return None
+        
+        return None  # Task not found in cache
     
     def get_time_entries(
         self,
@@ -189,19 +201,74 @@ class TogglService:
             user_ids: Optional list of Toggl user IDs to filter
         """
         workspace = workspace_id or self.workspace_id
+        
+        # Pre-load projects ONCE at the very start - they change rarely (monthly)
+        if workspace:
+            workspace_key = str(workspace)
+            if workspace_key not in self._project_cache or not self._project_cache[workspace_key]:
+                try:
+                    projects = self.get_projects(workspace)
+                    cache = self._project_cache.setdefault(workspace_key, {})
+                    for project in projects or []:
+                        pid = project.get("id")
+                        name = project.get("name")
+                        try:
+                            pid_int = int(pid)
+                        except (TypeError, ValueError):
+                            continue
+                        cache[pid_int] = name
+                except Exception:
+                    pass  # If loading fails, _lookup_project_name will handle it as fallback
+        
         start_day = self._parse_iso_to_date(start_date)
         end_day = self._parse_iso_to_date(end_date)
         cacheable = self._is_cacheable_range(start_day, end_day)
         cache_path: Optional[Path] = None
         normalized_entries: Optional[List[Dict[str, Any]]] = None
-        if cacheable and start_day and end_day:
+        should_fetch = True
+        
+        # Check cache metadata if cacheable and storage is available
+        if cacheable and start_day and end_day and self.storage and workspace:
             cache_path = self._cache_file_path(workspace, start_day, end_day)
-            cached_payload = self._load_cached_entries(cache_path)
-            if cached_payload is not None:
-                normalized_entries = cached_payload
+            
+            # Get cache metadata for the month
+            year = start_day.year
+            month = start_day.month
+            cache_metadata = self.storage.get_cache_metadata(int(workspace), year, month)
+            
+            if cache_metadata:
+                is_fresh, has_dirty = self._is_cache_fresh(int(workspace), year, month, cache_metadata)
+                
+                # Use cache if fresh and no dirty ranges
+                if is_fresh and not has_dirty:
+                    cached_payload = self._load_cached_entries(cache_path)
+                    if cached_payload is not None:
+                        normalized_entries = cached_payload
+                        should_fetch = False
+                elif is_fresh and has_dirty:
+                    # Cache is fresh but has dirty ranges - use stale cache but queue refresh
+                    cached_payload = self._load_cached_entries(cache_path)
+                    if cached_payload is not None:
+                        normalized_entries = cached_payload
+                        should_fetch = False
+                        # Queue refresh for dirty ranges
+                        dirty_ranges = cache_metadata.get('dirty_ranges', [])
+                        for dr in dirty_ranges:
+                            try:
+                                dr_start = datetime.fromisoformat(dr['start']).date()
+                                dr_end = datetime.fromisoformat(dr['end']).date()
+                                self.storage.add_refresh_job(int(workspace), dr_start, dr_end, priority=3)
+                            except (ValueError, KeyError):
+                                pass
+            else:
+                # No metadata - try to load from file cache if exists
+                cached_payload = self._load_cached_entries(cache_path)
+                if cached_payload is not None:
+                    normalized_entries = cached_payload
+                    should_fetch = False
 
         raw_entries: Any = []
-        if normalized_entries is None:
+        if normalized_entries is None or should_fetch:
             entries_data: Any = []
             if workspace:
                 # Prefer Reports API v3 for workspace-wide queries
@@ -328,10 +395,35 @@ class TogglService:
                 base = dict(entry_data)
                 _append_normalized(base)
 
+            # Store cache and update metadata if cacheable
             if cacheable and cache_path and normalized_entries:
                 self._store_cached_entries(cache_path, normalized_entries)
+                
+                # Update cache metadata with hash and detect changes
+                if self.storage and workspace and start_day and end_day:
+                    data_hash = self._calculate_data_hash(normalized_entries)
+                    year = start_day.year
+                    month = start_day.month
+                    
+                    # Check if hash changed (data was modified)
+                    existing_metadata = self.storage.get_cache_metadata(int(workspace), year, month)
+                    if existing_metadata and existing_metadata.get('data_hash'):
+                        old_hash = existing_metadata.get('data_hash')
+                        if old_hash != data_hash:
+                            # Data changed - mark the entire range as dirty for next refresh
+                            self.storage.mark_dirty_range(int(workspace), start_day, end_day)
+                    
+                    # Update metadata with new hash and clear dirty ranges (since we just refreshed)
+                    self.storage.set_cache_metadata(
+                        int(workspace),
+                        year,
+                        month,
+                        data_hash=data_hash,
+                        clear_dirty=True
+                    )
 
         if workspace:
+            # Projects should already be pre-loaded at the start of get_time_entries
             for entry in normalized_entries:
                 if entry.get("project_name"):
                     continue
@@ -346,6 +438,37 @@ class TogglService:
                         existing_project.setdefault("name", name)
 
         if workspace:
+            # Pre-load tasks for projects that actually appear in entries
+            unique_project_ids = set()
+            for entry in normalized_entries:
+                project_id = entry.get("project_id")
+                task_id = entry.get("task_id")
+                if project_id and task_id:
+                    try:
+                        unique_project_ids.add(int(project_id))
+                    except (TypeError, ValueError):
+                        pass
+            
+            # Load tasks for each unique project using correct cache structure
+            workspace_key = str(workspace)
+            project_cache = self._task_cache.setdefault(workspace_key, {})
+            for project_id in unique_project_ids:
+                # Check if tasks for this project are already cached
+                if project_id not in project_cache or not project_cache[project_id]:
+                    try:
+                        tasks = self.get_project_tasks(project_id, workspace)
+                        task_cache = project_cache.setdefault(project_id, {})
+                        for task in tasks or []:
+                            tid = task.get("id")
+                            name = task.get("name")
+                            try:
+                                tid_int = int(tid)
+                            except (TypeError, ValueError):
+                                continue
+                            task_cache[tid_int] = name
+                    except Exception:
+                        pass  # If loading fails, _lookup_task_name will handle it as fallback
+            
             for entry in normalized_entries:
                 if entry.get("task_name"):
                     continue
@@ -390,10 +513,76 @@ class TogglService:
 
     @staticmethod
     def _is_cacheable_range(start: Optional[date], end: Optional[date]) -> bool:
+        """
+        Cache ranges that end before the current month.
+        
+        Previous month can be cached but with TTL (weekly refresh).
+        Older periods (>= 2 months back) can be safely cached longer.
+        Current month is never cached.
+        """
         if not start or not end:
             return False
         first_day_current = date.today().replace(day=1)
         return end < first_day_current
+    
+    def _calculate_data_hash(self, entries: List[Dict[str, Any]]) -> str:
+        """Calculate hash of time entries data for change detection."""
+        if not entries:
+            return ""
+        
+        # Create a hash based on entry IDs and updated_at timestamps
+        hash_data = []
+        for entry in entries:
+            entry_id = entry.get('id') or entry.get('time_entry_id')
+            updated_at = entry.get('updated_at') or entry.get('at')
+            hash_data.append(f"{entry_id}:{updated_at}")
+        
+        hash_data.sort()
+        hash_string = "|".join(hash_data)
+        return hashlib.md5(hash_string.encode('utf-8')).hexdigest()
+    
+    def _is_cache_fresh(
+        self,
+        workspace_id: Optional[int],
+        year: int,
+        month: int,
+        cache_metadata: Optional[Dict[str, Any]]
+    ) -> tuple[bool, bool]:
+        """
+        Check if cache is fresh. Returns (is_fresh, has_dirty_ranges).
+        
+        Cache freshness rules:
+        - Previous month: fresh if < 7 days old (weekly refresh)
+        - Older months: fresh if < 30 days old
+        """
+        if not cache_metadata or not cache_metadata.get('last_full_fetch'):
+            return False, False
+        
+        try:
+            last_fetch = datetime.fromisoformat(cache_metadata['last_full_fetch'])
+            days_old = (datetime.now() - last_fetch).days
+            
+            # Determine TTL based on month age
+            today = date.today()
+            first_day_current = today.replace(day=1)
+            last_day_prev_month = first_day_current - timedelta(days=1)
+            first_day_prev_month = last_day_prev_month.replace(day=1)
+            
+            cache_month = date(year, month, 1)
+            
+            if cache_month >= first_day_prev_month:
+                # Previous month - TTL is 7 days (weekly refresh)
+                ttl_days = 7
+            else:
+                # Older months - TTL is 30 days
+                ttl_days = 30
+            
+            is_fresh = days_old < ttl_days
+            has_dirty = bool(cache_metadata.get('dirty_ranges'))
+            
+            return is_fresh, has_dirty
+        except (ValueError, TypeError):
+            return False, False
 
     def _load_cached_entries(self, path: Path) -> Optional[List[Dict[str, Any]]]:
         try:
@@ -427,80 +616,6 @@ class TogglService:
     def get_time_entries_current_month_to_date(self, user_ids: Optional[List[int]] = None) -> List[TimeEntry]:
         start_iso, end_iso = current_month_to_date_range(self.settings.timezone)
         return self.get_time_entries(start_iso, end_iso, user_ids=user_ids)
-    
-    def get_user_time_entries(
-        self,
-        user_id: int,
-        start_date: str,
-        end_date: str,
-        workspace_id: Optional[int] = None
-    ) -> List[TimeEntry]:
-        """Get time entries for specific user."""
-        workspace = workspace_id or self.workspace_id
-        if not workspace:
-            raise ValueError("Workspace ID is required")
-        
-        params = {
-            "start_date": start_date,
-            "end_date": end_date,
-            "user_ids": str(user_id)
-        }
-        
-        entries_data = self._make_request(f"/workspaces/{workspace}/time_entries", params)
-        
-        # Convert to TimeEntry objects
-        entries = []
-        for entry_data in entries_data:
-            try:
-                entry = TimeEntry.from_toggl_data(entry_data)
-                entries.append(entry)
-            except Exception as e:
-                print(f"Warning: Failed to parse time entry {entry_data.get('id', 'unknown')}: {e}")
-                continue
-        
-        return entries
-    
-    def get_project_time_entries(
-        self,
-        project_id: int,
-        start_date: str,
-        end_date: str,
-        workspace_id: Optional[int] = None
-    ) -> List[TimeEntry]:
-        """Get time entries for specific project."""
-        workspace = workspace_id or self.workspace_id
-        if not workspace:
-            raise ValueError("Workspace ID is required")
-        
-        params = {
-            "start_date": start_date,
-            "end_date": end_date,
-            "project_ids": str(project_id)
-        }
-        
-        entries_data = self._make_request(f"/workspaces/{workspace}/time_entries", params)
-        
-        # Convert to TimeEntry objects
-        entries = []
-        for entry_data in entries_data:
-            try:
-                entry = TimeEntry.from_toggl_data(entry_data)
-                entries.append(entry)
-            except Exception as e:
-                print(f"Warning: Failed to parse time entry {entry_data.get('id', 'unknown')}: {e}")
-                continue
-        
-        return entries
-    
-    def get_current_time_entry(self) -> Optional[TimeEntry]:
-        """Get currently running time entry."""
-        try:
-            entry_data = self._make_request("/me/time_entries/current")
-            if entry_data:
-                return TimeEntry.from_toggl_data(entry_data)
-            return None
-        except Exception:
-            return None
     
     def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         """Find user by email address."""

@@ -209,6 +209,30 @@ class ReportGenerator:
                 lines.append("")
         
         return "\n".join(lines)
+
+    def format_overtime_debug(self, overtime_data: Dict[str, Any]) -> str:
+        """Debug string for overtime snapshot to aid troubleshooting."""
+        if not overtime_data:
+            return "No overtime data available."
+        lines = []
+        monthly_total = overtime_data.get("monthly_total_hours", 0.0)
+        monthly_expected = overtime_data.get("monthly_expected_hours", 0.0)
+        lines.append(
+            f"   - monthly: worked={monthly_total:.2f}h expected={monthly_expected:.2f}h "
+            f"delta={overtime_data.get('monthly_overtime', 0.0):.2f}h"
+        )
+        lines.append(f"   - daily overtime total: {overtime_data.get('daily_overtime', 0.0):.2f}h")
+        lines.append(f"   - weekend overtime: {overtime_data.get('weekend_overtime', 0.0):.2f}h")
+        weekly_breakdown = overtime_data.get("weekly_breakdown", {}) or {}
+        if weekly_breakdown:
+            lines.append("   - weekly breakdown:")
+            for week_start, info in sorted(weekly_breakdown.items()):
+                lines.append(
+                    f"       {week_start}: worked={info.get('total_hours', 0.0):.2f}h "
+                    f"expected={info.get('expected_hours', 0.0):.2f}h "
+                    f"delta={info.get('overtime', 0.0):.2f}h"
+                )
+        return "\n".join(lines)
     
     def format_admin_summary(self, reports: List[UserReport]) -> str:
         """Format admin summary of all users."""

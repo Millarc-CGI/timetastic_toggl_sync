@@ -158,6 +158,9 @@ python -m src.cli sync-users
 # Sync data for a date range
 python -m src.cli sync --start 2025-10-01 --end 2025-10-31
 
+# Sync previous month without passing dates (this uses the default previous calendar month)
+python -m src.cli sync
+
 # Check system status
 python -m src.cli status
 ```
@@ -178,6 +181,12 @@ python -m src.cli report-monthly --role producer
 
 # Generate report for specific user
 python -m src.cli report-monthly --user user@company.com
+
+# Generate + Slack-send reports for every user
+python -m src.cli report-monthly --send-all-users
+
+# Refresh last week of data before sending Slack reports
+python -m src.cli report-monthly --send-all-users --refresh-cache
 ```
 
 #### Notifications
@@ -215,6 +224,7 @@ python -m src.tests.timetastic_test
 
 ### Debug Scripts
 - `python -m src.tests.report_debug` – fetches data for the configured test user and prints weekly/monthly summaries (plus optional Slack delivery).
+- `python -m src.tests.report_debug --bulk` – reruns monthly report generation for all synced users and prints each user's hours, overtime, and missing entries.
 - `python -m src.tests.project_stats_debug --year 2025 --month 10 --limit 5` – aggregates workspace time entries, runs `StatisticsGenerator.generate_project_stats`, and prints the top projects for the selected month.
 
 ## 📊 Report Types
@@ -304,6 +314,11 @@ Customize how different absence types are handled:
 SLACK_NOTIFICATION_DAY=Friday
 SLACK_NOTIFICATION_TIME=09:00
 MISSING_ENTRIES_CHECK_DAYS=7
+SEND_MONTHLY_REPORTS=true
+EXCLUDED_REPORT_EMAILS=
+SEND_ADMIN_NOTIFICATIONS=true
+REFRESH_DAY_OF_WEEK=Monday
+REFRESH_TIME=03:00
 ```
 
 ## 🚀 Future Plans

@@ -122,6 +122,37 @@ class SQLiteStorage:
                 )
             """)
             
+            # Cache metadata table - tracks cache freshness and dirty ranges
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS cache_metadata (
+                    workspace_id INTEGER,
+                    year INTEGER,
+                    month INTEGER,
+                    last_full_fetch TEXT,
+                    last_updated_at TEXT,
+                    data_hash TEXT,
+                    dirty_ranges TEXT,
+                    PRIMARY KEY (workspace_id, year, month)
+                )
+            """)
+            
+            # Refresh queue table - manages API refresh requests
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS refresh_queue (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workspace_id INTEGER,
+                    start_date TEXT,
+                    end_date TEXT,
+                    priority INTEGER DEFAULT 5,
+                    status TEXT DEFAULT 'pending',
+                    scheduled_at TEXT,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    retries INTEGER DEFAULT 0,
+                    last_error TEXT
+                )
+            """)
+            
             # Create indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_time_entries_user_email ON time_entries(user_email)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_time_entries_start_time ON time_entries(start_time)")
@@ -238,8 +269,25 @@ class SQLiteStorage:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
+                email_cache: Dict[int, str] = {}
                 
                 for entry in entries:
+                    email = (entry.user_email or "").strip().lower()
+                    if not email and entry.user_id:
+                        # Look up email via toggl_user_id if missing from payload
+                        if entry.user_id in email_cache:
+                            email = email_cache[entry.user_id]
+                        else:
+                            cursor.execute(
+                                "SELECT email FROM users WHERE toggl_user_id = ? LIMIT 1",
+                                (entry.user_id,),
+                            )
+                            row = cursor.fetchone()
+                            if row and row[0]:
+                                email = (row[0] or "").strip().lower()
+                                email_cache[entry.user_id] = email
+                    entry.user_email = email or None
+
                     cursor.execute("""
                         INSERT OR REPLACE INTO time_entries 
                         (toggl_id, description, start_time, end_time, duration_seconds,
@@ -389,13 +437,56 @@ class SQLiteStorage:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
+                email_cache: Dict[int, str] = {}
+                
+                # Separate public holidays from regular absences
+                public_holidays = []
+                regular_absences = []
                 
                 for absence in absences:
+                    # Check if this is a public holiday (no user_email, holiday type, notes start with "Public holiday:")
+                    is_public_holiday = (
+                        not absence.user_email and 
+                        absence.absence_type == "holiday" and 
+                        absence.status == "Holiday" and
+                        (absence.notes or "").strip().startswith("Public holiday:")
+                    )
+                    
+                    if is_public_holiday:
+                        public_holidays.append(absence)
+                    else:
+                        regular_absences.append(absence)
+                
+                # Get all users to assign public holidays to
+                cursor.execute("SELECT email, timetastic_user_id FROM users")
+                all_users = cursor.fetchall()
+                user_email_map = {user_id: email.lower() for email, user_id in all_users if user_id}
+                
+                print(f"   [DEBUG] Save Public Holidays: Found {len(public_holidays)} public holidays, assigning to {len(user_email_map)} users")
+                
+                # Save regular absences
+                for absence in regular_absences:
+                    email = (absence.user_email or "").strip().lower()
+                    if not email and absence.user_id:
+                        # Look up email via timetastic_user_id if missing from payload
+                        if absence.user_id in email_cache:
+                            email = email_cache[absence.user_id]
+                        else:
+                            cursor.execute(
+                                "SELECT email FROM users WHERE timetastic_user_id = ? LIMIT 1",
+                                (absence.user_id,),
+                            )
+                            row = cursor.fetchone()
+                            if row and row[0]:
+                                email = (row[0] or "").strip().lower()
+                                email_cache[absence.user_id] = email
+                    absence.user_email = email or None
+
                     cursor.execute("""
                         INSERT OR REPLACE INTO absences 
                         (timetastic_id, absence_type, start_date, end_date, status,
-                         user_id, user_email, user_name, notes, department,
-                         created_at, updated_at, cached_at)
+                        user_id, user_email, user_name, notes, department,
+                        created_at, updated_at, cached_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         absence.timetastic_id,
@@ -413,7 +504,37 @@ class SQLiteStorage:
                         datetime.now().isoformat()
                     ))
                 
+                # Save public holidays for each user
+                for ph in public_holidays:
+                    for user_id, user_email in user_email_map.items():
+                        # Create unique timetastic_id for each user's public holiday
+                        # Use negative ID to avoid conflicts with regular timetastic_ids
+                        unique_id = -(ph.timetastic_id * 1000000 + user_id)
+                        
+                        cursor.execute("""
+                            INSERT OR REPLACE INTO absences 
+                            (timetastic_id, absence_type, start_date, end_date, status,
+                            user_id, user_email, user_name, notes, department,
+                            created_at, updated_at, cached_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            unique_id,
+                            ph.absence_type,
+                            ph.start_date.isoformat(),
+                            ph.end_date.isoformat(),
+                            ph.status,
+                            user_id,
+                            user_email,
+                            None,
+                            ph.notes,
+                            None,
+                            ph.created_at.isoformat() if ph.created_at else None,
+                            ph.updated_at.isoformat() if ph.updated_at else None,
+                            datetime.now().isoformat()
+                        ))
+                
                 conn.commit()
+                print(f"   [DEBUG] Save Public Holidays: Successfully saved {len(public_holidays)} public holidays for {len(user_email_map)} users")
                 return True
         except Exception as e:
             print(f"Error saving absences: {e}")
@@ -425,11 +546,12 @@ class SQLiteStorage:
         start_date: Optional[date] = None, 
         end_date: Optional[date] = None
     ) -> List[Absence]:
-        """Get absences for user within date range."""
+        """Get absences for user within date range, including public holidays (which are now assigned to users)."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
+                # Get all absences for this user (including public holidays which are now assigned to users)
                 query = "SELECT * FROM absences WHERE user_email = ?"
                 params = [user_email.lower()]
                 
@@ -446,7 +568,13 @@ class SQLiteStorage:
                 cursor.execute(query, params)
                 rows = cursor.fetchall()
                 
-                return [self._row_to_absence(row) for row in rows]
+                absences = [self._row_to_absence(row) for row in rows]
+                
+                # Count public holidays
+                public_holidays_count = sum(1 for abs in absences if (abs.notes or "").strip().startswith("Public holiday:"))
+                print(f"   [DEBUG] Storage: Found {len(absences)} absences for {user_email} (including {public_holidays_count} public holidays)")
+                
+                return absences
         except Exception as e:
             print(f"Error getting absences for {user_email}: {e}")
             return []
@@ -630,3 +758,275 @@ class SQLiteStorage:
         except Exception as e:
             print(f"Error getting database stats: {e}")
             return {}
+    
+    # Cache metadata methods
+    def get_cache_metadata(self, workspace_id: int, year: int, month: int) -> Optional[Dict[str, Any]]:
+        """Get cache metadata for a specific workspace/month."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT last_full_fetch, last_updated_at, data_hash, dirty_ranges
+                    FROM cache_metadata
+                    WHERE workspace_id = ? AND year = ? AND month = ?
+                """, (workspace_id, year, month))
+                row = cursor.fetchone()
+                
+                if row:
+                    dirty_ranges = []
+                    if row[3]:
+                        try:
+                            dirty_ranges = json.loads(row[3])
+                        except json.JSONDecodeError:
+                            pass
+                    
+                    return {
+                        'last_full_fetch': row[0],
+                        'last_updated_at': row[1],
+                        'data_hash': row[2],
+                        'dirty_ranges': dirty_ranges
+                    }
+                return None
+        except Exception as e:
+            print(f"Error getting cache metadata: {e}")
+            return None
+    
+    def set_cache_metadata(
+        self,
+        workspace_id: int,
+        year: int,
+        month: int,
+        data_hash: Optional[str] = None,
+        dirty_ranges: Optional[List[Dict[str, str]]] = None,
+        clear_dirty: bool = False
+    ) -> bool:
+        """Set or update cache metadata."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                now = datetime.now().isoformat()
+                
+                # Check if metadata exists
+                cursor.execute("""
+                    SELECT last_full_fetch, dirty_ranges FROM cache_metadata
+                    WHERE workspace_id = ? AND year = ? AND month = ?
+                """, (workspace_id, year, month))
+                existing = cursor.fetchone()
+                
+                if existing:
+                    # Update existing
+                    current_dirty = []
+                    if existing[1]:
+                        try:
+                            current_dirty = json.loads(existing[1])
+                        except json.JSONDecodeError:
+                            pass
+                    
+                    # Merge dirty ranges if provided
+                    if dirty_ranges:
+                        current_dirty.extend(dirty_ranges)
+                        # Remove duplicates and merge overlapping ranges
+                        current_dirty = self._merge_dirty_ranges(current_dirty)
+                    
+                    dirty_ranges_json = None if clear_dirty or not current_dirty else json.dumps(current_dirty)
+                    
+                    cursor.execute("""
+                        UPDATE cache_metadata
+                        SET last_full_fetch = ?,
+                            last_updated_at = ?,
+                            data_hash = COALESCE(?, data_hash),
+                            dirty_ranges = ?
+                        WHERE workspace_id = ? AND year = ? AND month = ?
+                    """, (now, now, data_hash, dirty_ranges_json, workspace_id, year, month))
+                else:
+                    # Insert new
+                    dirty_ranges_json = None if not dirty_ranges else json.dumps(dirty_ranges)
+                    cursor.execute("""
+                        INSERT INTO cache_metadata
+                        (workspace_id, year, month, last_full_fetch, last_updated_at, data_hash, dirty_ranges)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (workspace_id, year, month, now, now, data_hash, dirty_ranges_json))
+                
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"Error setting cache metadata: {e}")
+            return False
+    
+    def mark_dirty_range(self, workspace_id: int, start_date: date, end_date: date) -> bool:
+        """Mark a date range as dirty (needs refresh)."""
+        try:
+            # Determine which months are affected
+            current = start_date
+            months_to_update = set()
+            
+            while current <= end_date:
+                months_to_update.add((current.year, current.month))
+                # Move to next month
+                if current.month == 12:
+                    current = date(current.year + 1, 1, 1)
+                else:
+                    current = date(current.year, current.month + 1, 1)
+            
+            # Update each affected month
+            for year, month in months_to_update:
+                metadata = self.get_cache_metadata(workspace_id, year, month)
+                if metadata:
+                    dirty_ranges = metadata.get('dirty_ranges', [])
+                else:
+                    dirty_ranges = []
+                
+                # Add new range
+                dirty_ranges.append({
+                    'start': start_date.isoformat(),
+                    'end': end_date.isoformat()
+                })
+                
+                # Merge overlapping ranges
+                dirty_ranges = self._merge_dirty_ranges(dirty_ranges)
+                
+                self.set_cache_metadata(workspace_id, year, month, dirty_ranges=dirty_ranges)
+            
+            return True
+        except Exception as e:
+            print(f"Error marking dirty range: {e}")
+            return False
+    
+    @staticmethod
+    def _merge_dirty_ranges(ranges: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """Merge overlapping date ranges."""
+        if not ranges:
+            return []
+        
+        # Parse dates and sort
+        parsed = []
+        for r in ranges:
+            try:
+                start = datetime.fromisoformat(r['start']).date()
+                end = datetime.fromisoformat(r['end']).date()
+                parsed.append((start, end))
+            except (ValueError, KeyError):
+                continue
+        
+        if not parsed:
+            return []
+        
+        parsed.sort()
+        
+        # Merge overlapping
+        merged = [parsed[0]]
+        for start, end in parsed[1:]:
+            last_start, last_end = merged[-1]
+            if start <= last_end + timedelta(days=1):  # Overlapping or adjacent
+                merged[-1] = (last_start, max(last_end, end))
+            else:
+                merged.append((start, end))
+        
+        # Convert back to dict format
+        return [{'start': s.isoformat(), 'end': e.isoformat()} for s, e in merged]
+    
+    # Refresh queue methods
+    def add_refresh_job(
+        self,
+        workspace_id: int,
+        start_date: date,
+        end_date: date,
+        priority: int = 5
+    ) -> int:
+        """Add a refresh job to the queue. Returns job ID."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO refresh_queue
+                    (workspace_id, start_date, end_date, priority, status, scheduled_at)
+                    VALUES (?, ?, ?, ?, 'pending', ?)
+                """, (
+                    workspace_id,
+                    start_date.isoformat(),
+                    end_date.isoformat(),
+                    priority,
+                    datetime.now().isoformat()
+                ))
+                conn.commit()
+                return cursor.lastrowid
+        except Exception as e:
+            print(f"Error adding refresh job: {e}")
+            return -1
+    
+    def get_next_refresh_job(self) -> Optional[Dict[str, Any]]:
+        """Get the next pending refresh job (highest priority first)."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT id, workspace_id, start_date, end_date, priority, retries
+                    FROM refresh_queue
+                    WHERE status = 'pending'
+                    ORDER BY priority ASC, scheduled_at ASC
+                    LIMIT 1
+                """)
+                row = cursor.fetchone()
+                
+                if row:
+                    return {
+                        'id': row[0],
+                        'workspace_id': row[1],
+                        'start_date': row[2],
+                        'end_date': row[3],
+                        'priority': row[4],
+                        'retries': row[5]
+                    }
+                return None
+        except Exception as e:
+            print(f"Error getting next refresh job: {e}")
+            return None
+    
+    def mark_refresh_job_started(self, job_id: int) -> bool:
+        """Mark a refresh job as started."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE refresh_queue
+                    SET status = 'running', started_at = ?
+                    WHERE id = ?
+                """, (datetime.now().isoformat(), job_id))
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"Error marking refresh job started: {e}")
+            return False
+    
+    def mark_refresh_job_completed(self, job_id: int, success: bool = True, error: Optional[str] = None) -> bool:
+        """Mark a refresh job as completed."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                status = 'completed' if success else 'failed'
+                cursor.execute("""
+                    UPDATE refresh_queue
+                    SET status = ?, completed_at = ?, last_error = ?
+                    WHERE id = ?
+                """, (status, datetime.now().isoformat(), error, job_id))
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"Error marking refresh job completed: {e}")
+            return False
+    
+    def increment_refresh_job_retries(self, job_id: int) -> bool:
+        """Increment retry count for a refresh job."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE refresh_queue
+                    SET retries = retries + 1, status = 'pending'
+                    WHERE id = ?
+                """, (job_id,))
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"Error incrementing refresh job retries: {e}")
+            return False

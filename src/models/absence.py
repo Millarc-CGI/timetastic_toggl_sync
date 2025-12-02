@@ -136,6 +136,10 @@ class Absence:
             elif isinstance(type_data, str):
                 absence_type = type_data
 
+        # Normalize "Public Holiday" type to "holiday" for consistency
+        if absence_type == "Public Holiday":
+            absence_type = "holiday"
+
         booking_unit = data.get("bookingUnit") or data.get("booking_unit") or "Days"
         try:
             duration_value = float(data.get("duration", 0) or 0)
@@ -183,10 +187,10 @@ class Absence:
 
         return cls(
             timetastic_id=int(data.get("id", 0)),
-            absence_type="public_holiday",
+            absence_type="holiday",
             start_date=holiday_date or date.today(),
             end_date=holiday_date or date.today(),
-            status="PublicHoliday",
+            status="Holiday",
             booking_unit="Days",
             duration_value=1.0,
             notes=f"Public holiday: {holiday_name}",

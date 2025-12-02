@@ -13,8 +13,9 @@ from typing import Optional, Set, List, Dict, Any
 
 # Load .env if present
 try:
-    from dotenv import load_dotenv
-    load_dotenv()
+    import importlib
+    dotenv = importlib.import_module("dotenv")
+    dotenv.load_dotenv()
 except Exception:
     pass
 
@@ -70,8 +71,8 @@ class Settings:
     slack_default_sender_name: str
     slack_dm_fallback_channel: str
     slack_org_email_domain: str
-    slack_notification_day: str
-    slack_notification_time: str
+    refresh_day_of_week: str
+    refresh_time: str
     slack_signing_secret: str
     
     # Access Control
@@ -84,6 +85,8 @@ class Settings:
     send_missing_entries_notifications: bool
     send_monthly_reports: bool
     send_admin_notifications: bool
+    excluded_report_emails: Set[str]
+    included_report_emails: Set[str]
     
     # Logging
     log_level: str
@@ -143,8 +146,8 @@ def load_settings() -> Settings:
         slack_default_sender_name=os.getenv("SLACK_DEFAULT_SENDER_NAME", "MillarcAI").strip(),
         slack_dm_fallback_channel=os.getenv("SLACK_DM_FALLBACK_CHANNEL", "general").strip(),
         slack_org_email_domain=os.getenv("SLACK_ORG_EMAIL_DOMAIN", "millarcgroup.slack.com").strip(),
-        slack_notification_day=os.getenv("SLACK_NOTIFICATION_DAY", "Friday").strip(),
-        slack_notification_time=os.getenv("SLACK_NOTIFICATION_TIME", "09:00").strip(),
+        refresh_day_of_week=os.getenv("REFRESH_DAY_OF_WEEK", "Monday").strip(),
+        refresh_time=os.getenv("REFRESH_TIME", "08:00").strip(),
         slack_signing_secret=os.getenv("SLACK_SIGNING_SECRET", "").strip(), 
         # Access Control
         admin_emails=_split_csv_set(os.getenv("ADMIN_EMAILS", "")),
@@ -156,6 +159,10 @@ def load_settings() -> Settings:
         send_missing_entries_notifications=os.getenv("SEND_MISSING_ENTRIES_NOTIFICATIONS", "true").lower() == "true",
         send_monthly_reports=os.getenv("SEND_MONTHLY_REPORTS", "true").lower() == "true",
         send_admin_notifications=os.getenv("SEND_ADMIN_NOTIFICATIONS", "true").lower() == "true",
+        excluded_report_emails=_split_csv_set(os.getenv("EXCLUDED_REPORT_EMAILS", "")),
+        included_report_emails=_split_csv_set(
+            os.getenv("INCLUDED_REPORT_EMAILS", os.getenv("INCLUDED_REPORT_EMAIL", ""))
+        ),
         
         # Logging
         log_level=os.getenv("LOG_LEVEL", "INFO").strip(),

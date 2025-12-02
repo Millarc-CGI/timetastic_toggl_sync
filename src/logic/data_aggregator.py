@@ -211,12 +211,13 @@ class DataAggregator:
             for absence_detail in day_data.get('absence_details', []):
                 absence_hours_breakdown[absence_detail['absence_type']] += absence_detail['hours']
             
-            # Track missing days (no entries and no absence) but skip today/future
+            # Track missing days (no entries and no absence) but skip today/future, weekends, and public holidays
             if (
                 current_date < today
                 and not day_data['has_entries']
                 and not day_data['has_absence']
                 and not day_data['is_weekend']
+                and not day_data['is_public_holiday']
             ):
                 missing_days.append(current_date)
 
@@ -437,9 +438,12 @@ class DataAggregator:
         return hours_for_day >= (self.default_daily_hours - 0.25)
 
     def _is_public_holiday_absence(self, absence: Absence) -> bool:
-        status = (absence.status or "").strip().lower()
-        absence_type = (absence.absence_type or "").strip().lower()
-        return status == "publicholiday" or absence_type == "public_holiday"
+        """Check if absence is a public holiday (holiday without user_email, identified by notes)."""
+        # Public holidays have absence_type='holiday', status='Holiday', and notes starting with 'Public holiday:'
+        if not absence.user_email and absence.absence_type == "holiday" and absence.status == "Holiday":
+            notes = (absence.notes or "").strip()
+            return notes.startswith("Public holiday:")
+        return False
 
     def _should_override_absence_with_work(self, worked_hours: float, absence_entries: List[Dict[str, Any]]) -> bool:
         if worked_hours <= 0:
@@ -561,26 +565,47 @@ class DataAggregator:
                 entries_by_user[entry.user_email.lower()].add(entry.date)
         
         absences_by_user = defaultdict(set)
+        public_holidays_by_user = defaultdict(set)
+        
+        # Collect all user emails first
+        user_emails = [user.email.lower() for user in users]
+        
         for absence in absences:
-            if absence.user_email:
-                # Add all dates in the absence range
-                current_date = absence.start_date
-                while current_date <= absence.end_date:
-                    if start_date <= current_date <= end_date:
+            # Check if this is a public holiday (holiday without user_email, identified by notes)
+            is_public_holiday = (
+                not absence.user_email and 
+                absence.absence_type == "holiday" and 
+                absence.status == "Holiday" and
+                (absence.notes or "").strip().startswith("Public holiday:")
+            )
+            
+            # Add all dates in the absence range
+            current_date = absence.start_date
+            while current_date <= absence.end_date:
+                if start_date <= current_date <= end_date:
+                    if is_public_holiday:
+                        # Public holidays apply to all users - add to all user emails we're checking
+                        for user_email in user_emails:
+                            public_holidays_by_user[user_email.lower()].add(current_date)
+                    elif absence.user_email:
                         absences_by_user[absence.user_email.lower()].add(current_date)
-                    current_date += timedelta(days=1)
+                current_date += timedelta(days=1)
         
         # Check each user
         for user in users:
             user_email = user.email.lower()
             user_entries = entries_by_user.get(user_email, set())
             user_absences = absences_by_user.get(user_email, set())
+            user_public_holidays = public_holidays_by_user.get(user_email, set())
             
             # Check each date in the range
             current_date = start_date
             while current_date <= end_date:
-                # Skip weekends (optional - could be configurable)
-                if current_date.weekday() < 5:  # Monday = 0, Friday = 4
+                # Skip weekends and public holidays
+                is_weekend = current_date.weekday() >= 5
+                is_public_holiday = current_date in user_public_holidays
+                
+                if not is_weekend and not is_public_holiday:
                     has_entry = current_date in user_entries
                     has_absence = current_date in user_absences
                     

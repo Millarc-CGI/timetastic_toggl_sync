@@ -79,58 +79,197 @@ def ping():
         print(f"   ❌ Database: Error - {e}")
 
 
-@cli.command()
-@click.option("--start", required=True, help="Start date (YYYY-MM-DD)")
-@click.option("--end", required=True, help="End date (YYYY-MM-DD)")
-def sync(start: str, end: str):
-    """Sync data from Toggl and Timetastic for the specified date range."""
-    settings = load_settings()
-    
-    try:
-        start_date = datetime.strptime(start, "%Y-%m-%d").date()
-        end_date = datetime.strptime(end, "%Y-%m-%d").date()
-    except ValueError:
-        print("❌ Invalid date format. Use YYYY-MM-DD")
-        return
-    
-    print(f"🔄 Starting sync for {start_date} to {end_date}...")
-    
-    # Initialize services
-    toggl_service = TogglService(settings)
-    timetastic_service = TimetasticService(settings)
+def _sync_range(settings, start_date: date, end_date: date, sync_type: str = "manual_sync"):
+    """Internal helper to sync a given date range."""
+    print(f"🔄 Starting sync for {start_date} to {end_date} (type: {sync_type})...")
     storage = SQLiteStorage(settings)
-    
-    # Start sync log
-    log_id = storage.log_sync_start("manual_sync")
-    
+    toggl_service = TogglService(settings, storage=storage)
+    timetastic_service = TimetasticService(settings, storage=storage)
+
+    log_id = storage.log_sync_start(sync_type)
     try:
-        # Convert dates to ISO format for APIs
         start_iso = f"{start_date}T00:00:00Z"
         end_iso = f"{end_date}T23:59:59Z"
-        
-        # Fetch time entries
+
         print("📊 Fetching time entries from Toggl...")
         time_entries = toggl_service.get_time_entries(start_iso, end_iso)
         print(f"   ✅ Found {len(time_entries)} time entries")
-        
-        # Fetch absences
+
         print("🏖️ Fetching absences from Timetastic...")
         absences = timetastic_service.get_holidays(start_iso, end_iso)
-        print(f"   ✅ Found {len(absences)} absences")
-        
-        # Save to storage
+        # Removed duplicate absences log
+
         print("💾 Saving data to database...")
         storage.save_time_entries(time_entries)
         storage.save_absences(absences)
-        
-        # Log success
+
         storage.log_sync_end(log_id, "success", len(time_entries) + len(absences))
-        
         print("✅ Sync completed successfully!")
-        
     except Exception as e:
         storage.log_sync_end(log_id, "error", 0, [str(e)])
         print(f"❌ Sync failed: {e}")
+        raise
+
+
+
+
+def _sync_users_and_cache(settings):
+    """Refresh user mappings from services and persist them for reporting."""
+    user_service = UserService(settings)
+    storage = SQLiteStorage(settings)
+
+    print("?? Refreshing user mappings before reporting...")
+    users = user_service.sync_users_from_services()
+    saved = 0
+    for user in users:
+        if storage.save_user(user):
+            saved += 1
+
+    # Removed debug logs - stats calculation kept for potential future use
+    stats = user_service.get_user_statistics(users)
+    return users
+
+
+def _build_slack_email_map(slack_service: SlackService) -> dict:
+    """Fetch Slack users once and build email->id map to avoid per-user lookups."""
+    try:
+        members = slack_service.get_users()
+    except Exception as exc:
+        print(f"?? Slack lookup failed (users_list): {exc}")
+        return {}
+
+    mapping = {}
+    skipped_deleted = 0
+    skipped_bots = 0
+    for member in members:
+        if member.get("deleted"):
+            skipped_deleted += 1
+            continue
+        if member.get("is_bot"):
+            skipped_bots += 1
+            continue
+        profile = member.get("profile", {}) or {}
+        email = (profile.get("email") or "").strip().lower()
+        if not email:
+            continue
+        mapping[email] = member.get("id")
+
+    # Removed debug logs
+    return mapping
+
+
+def _generate_user_monthly_report(
+    user,
+    start_date: date,
+    end_date: date,
+    aggregator: DataAggregator,
+    overtime_calc: OvertimeCalculator,
+    report_gen: ReportGenerator,
+    storage: SQLiteStorage,
+    year: int,
+    month: int,
+):
+    """Fetch cached data, aggregate, calculate overtime and build UserReport."""
+    print(f"   [DEBUG] Generating report for {user.email} ({year}-{month:02d})")
+    
+    time_entries = storage.get_time_entries_for_user(user.email, start_date, end_date)
+    print(f"   [DEBUG] Storage: Found {len(time_entries)} time entries from SQLite")
+    # Show sample entries
+    if time_entries:
+        print(f"   [DEBUG] Sample time entries (first 7):")
+        for entry in time_entries[:7]:
+            print(f"      {entry.start_time.date()} | {entry.duration_hours:.2f}h | {entry.description[:50]} | user_id={entry.user_id}")
+    
+    absences = storage.get_absences_for_user(user.email, start_date, end_date)
+    print(f"   [DEBUG] Storage: Found {len(absences)} absences from SQLite")
+    # Show sample absences
+    if absences:
+        print(f"   [DEBUG] Sample absences (first 10):")
+        for abs in absences[:10]:
+            print(f"      {abs.start_date} to {abs.end_date} | type={abs.absence_type} | status={abs.status} | user_id={abs.user_id} | user_email={abs.user_email}")
+    
+    monthly_data = aggregator.aggregate_monthly(user.email, year, month, time_entries, absences)
+    print(f"   [DEBUG] Aggregator: Total hours={monthly_data.get('total_hours', 0):.2f}h, Billable={monthly_data.get('billable_hours', 0):.2f}h")
+    
+    # Show all days from aggregator
+    daily_data = monthly_data.get("daily_data", [])
+    print(f"   [DEBUG] Aggregator: All {len(daily_data)} days:")
+    for day in daily_data:
+        toggl_h = day.get('time_entry_hours', 0.0)
+        total_h = day.get('total_hours', 0.0)
+        absence_h = day.get('absence_hours', 0.0)
+        projects = ', '.join(f"{name}={hours:.1f}h" for name, hours in sorted(day.get('project_hours', {}).items())[:3]) or 'none'
+        print(f"      {day['date']} | toggl={toggl_h:.1f}h | absence={absence_h:.1f}h | total={total_h:.1f}h | projects=[{projects}]")
+    
+    overtime_data = overtime_calc.calculate_user_overtime(
+        user.email, year, month, daily_data
+    )
+    print(f"   [DEBUG] OvertimeCalc: Monthly OT={overtime_data.get('monthly_overtime', 0):.2f}h")
+    
+    monthly_report = report_gen.generate_monthly_user_report(
+        user_email=user.email,
+        user_name=user.display_name,
+        year=year,
+        month=month,
+        user_data=monthly_data,
+        overtime_data=overtime_data,
+        department=user.department,
+    )
+    print(f"   [DEBUG] ReportGen: Report created, total_hours={monthly_report.total_hours:.2f}h")
+    
+    return monthly_data, overtime_data, monthly_report
+
+@cli.command()
+@click.option("--start", help="Start date (YYYY-MM-DD)")
+@click.option("--end", help="End date (YYYY-MM-DD)")
+def sync(start: Optional[str], end: Optional[str]):
+    """Sync data from Toggl and Timetastic for the specified date range."""
+    settings = load_settings()
+    
+    if start and end:
+        try:
+            start_date = datetime.strptime(start, "%Y-%m-%d").date()
+            end_date = datetime.strptime(end, "%Y-%m-%d").date()
+        except ValueError:
+            print("❌ Invalid date format. Use YYYY-MM-DD")
+            return
+    elif start or end:
+        print("❌ Provide both --start and --end or omit them to use the previous month")
+        return
+    else:
+        today = date.today()
+        first_this = today.replace(day=1)
+        last_prev = first_this - timedelta(days=1)
+        start_date = last_prev.replace(day=1)
+        end_date = last_prev
+    
+    _sync_range(settings, start_date, end_date, "manual_sync")
+
+
+@cli.command()
+def refresh_cache():
+    """Weekly refresh of previous month's data from Toggl (scheduled for Monday 8:00)."""
+    settings = load_settings()
+    
+    print("🔄 Starting weekly cache refresh for previous month...")
+    
+    try:
+        # Calculate previous month
+        today = date.today()
+        first_this = today.replace(day=1)
+        last_prev = first_this - timedelta(days=1)
+        start_date = last_prev.replace(day=1)
+        end_date = last_prev
+        
+        print(f"   📅 Refreshing data for {start_date} to {end_date}")
+        
+        # Sync the range (this will update cache metadata)
+        _sync_range(settings, start_date, end_date, "weekly_refresh")
+        
+        print("✅ Weekly cache refresh completed!")
+        
+    except Exception as e:
+        print(f"❌ Weekly cache refresh failed: {e}")
         raise
 
 
@@ -167,6 +306,16 @@ def sync_users():
         print(f"   📊 Toggl: {stats['toggl_mapped']} users")
         print(f"   🏖️ Timetastic: {stats['timetastic_mapped']} users")
         print(f"   💬 Slack: {stats['slack_mapped']} users")
+
+        print("\n🧾 Detailed user list:")
+        for idx, user in enumerate(users, start=1):
+            excluded = ""
+            if user.email and user.email.lower() in settings.excluded_report_emails:
+                excluded = " [EXCLUDED]"
+            print(
+                f"   {idx}. {user.display_name} <{user.email}> "
+                f"(toggl={user.toggl_user_id}, timetastic={user.timetastic_user_id}, slack={user.slack_user_id}){excluded}"
+            )
         
     except Exception as e:
         print(f"❌ User sync failed: {e}")
@@ -200,6 +349,7 @@ def check_missing(days: int):
         if not users:
             print("❌ No users found. Run 'sync-users' first.")
             return
+
         
         # Get time entries and absences
         time_entries = storage.get_time_entries_for_period(start_date, end_date)
@@ -236,133 +386,178 @@ def check_missing(days: int):
 @cli.command()
 @click.option("--year", type=int, help="Year (defaults to previous month)")
 @click.option("--month", type=int, help="Month 1-12 (defaults to previous month)")
-@click.option("--user", help="Generate report for specific user email")
+@click.option("--user", "target_user", help="Generate report for specific user email")
 @click.option("--role", type=click.Choice(['admin', 'user']), help="Generate report for specific role")
-def report_monthly(year: Optional[int], month: Optional[int], user: Optional[str], role: Optional[str]):
+@click.option("--send-all-users", is_flag=True, default=False, help="Send Slack reports to every user after generating CSVs")
+@click.option("--refresh-cache", is_flag=True, default=False, help="Refresh the target month's data from Toggl/Timetastic before generating reports")
+def report_monthly(year: Optional[int], month: Optional[int], target_user: Optional[str], role: Optional[str], send_all_users: bool, refresh_cache: bool):
     """Generate monthly reports."""
     settings = load_settings()
-    
+
     # Determine target month
     if not year or not month:
         today = date.today()
         first_this = today.replace(day=1)
         last_prev = first_this - timedelta(days=1)
         year, month = last_prev.year, last_prev.month
-    
-    print(f"📊 Generating monthly reports for {year}-{month:02d}...")
-    
+
+    print(f"?? Generating monthly reports for {year}-{month:02d}...")
+
     try:
-        # Initialize services
-        storage = SQLiteStorage(settings)
-        file_storage = FileStorage(settings)
-        aggregator = DataAggregator(settings)
-        overtime_calc = OvertimeCalculator(settings)
-        report_gen = ReportGenerator(settings)
-        
-        # Get date range
         start_date = date(year, month, 1)
         if month == 12:
             end_date = date(year + 1, 1, 1) - timedelta(days=1)
         else:
             end_date = date(year, month + 1, 1) - timedelta(days=1)
-        
-        # Get users
-        users = storage.get_all_users()
+
+        # Optionally refresh cache (users + month data) before reporting
+        users = None
+        if refresh_cache:
+            users = _sync_users_and_cache(settings)
+            print(f"?? Refreshing cache for whole month ({start_date} to {end_date}) before reporting...")
+            _sync_range(settings, start_date, end_date, "monthly_refresh")
+
+        # Initialize services
+        print(f"[DEBUG] Initializing services for {year}-{month:02d}...")
+        storage = SQLiteStorage(settings)
+        toggl_service = TogglService(settings, storage=storage)  # Create for API tracking
+        file_storage = FileStorage(settings)
+        aggregator = DataAggregator(settings)
+        overtime_calc = OvertimeCalculator(settings)
+        report_gen = ReportGenerator(settings)
+        print(f"[DEBUG] Services initialized")
+
+        if users is None:
+            users = storage.get_all_users()
         if not users:
-            print("❌ No users found. Run 'sync-users' first.")
+            print("? No users found. Run 'sync-users' first.")
             return
-        
-        # Get data
-        time_entries = storage.get_time_entries_for_period(start_date, end_date)
-        absences = []
-        for user in users:
-            user_absences = storage.get_absences_for_user(user.email, start_date, end_date)
-            absences.extend(user_absences)
-        
-        # Aggregate data for all users
-        all_user_data = {}
-        for user in users:
-            user_entries = [e for e in time_entries if e.user_email and e.user_email.lower() == user.email.lower()]
-            user_absences = [a for a in absences if a.user_email and a.user_email.lower() == user.email.lower()]
-            
-            user_data = aggregator.aggregate_monthly(user.email, year, month, user_entries, user_absences)
-            all_user_data[user.email.lower()] = user_data
-        
-        # Generate reports based on parameters
-        if user:
-            # Generate report for specific user
-            user_email = user.lower()
-            if user_email in all_user_data:
-                user_data = all_user_data[user_email]
-                user_obj = next((u for u in users if u.email.lower() == user_email), None)
-                
-                if user_obj:
-                    # Generate overtime data
-                    overtime_data = overtime_calc.calculate_user_overtime(user_obj.email, year, month, user_data['daily_data'])
-                    
-                    # Generate user report
-                    user_report = report_gen.generate_monthly_user_report(
-                        user_obj.email,
-                        user_obj.display_name,
-                        year,
-                        month,
-                        user_data,
-                        overtime_data,
-                        department=user_obj.department
-                    )
-                    
-                    # Export to CSV
-                    csv_file = file_storage.export_user_report_csv(user_report)
-                    print(f"✅ User report exported to: {csv_file}")
-                    
-                    # Send Slack notification if enabled
-                    if settings.send_monthly_reports:
-                        slack_service = SlackService(settings)
-                        slack_service.send_monthly_report(user_obj.email, user_report.to_dict())
-                        print(f"📤 Monthly report sent to {user_obj.display_name}")
+        print(f"[DEBUG] Found {len(users)} users in storage")
+
+        if send_all_users and not settings.send_monthly_reports:
+            print("?? SEND_MONTHLY_REPORTS disabled; enable it to deliver Slack summaries.")
+            send_all_users = False
+
+        slack_service: Optional[SlackService] = SlackService(settings) if settings.send_monthly_reports else None
+        slack_email_map: dict = {}
+        if slack_service and send_all_users:
+            slack_email_map = _build_slack_email_map(slack_service)
+
+        excluded_emails = settings.excluded_report_emails
+        included_emails = settings.included_report_emails
+        eligible_users = users
+        if send_all_users:
+            if included_emails:
+                eligible_users = [
+                    u for u in users
+                    if u.toggl_user_id and u.email and u.email.lower() in included_emails
+                ]
             else:
-                print(f"❌ User {user} not found or has no data for this period")
-        
+                eligible_users = [
+                    u for u in users
+                    if u.toggl_user_id and u.email and u.email.lower() not in excluded_emails
+                ]
+            if not eligible_users:
+                print("?? No eligible Toggl users found; nothing to send.")
+                return
+            print(f"?? Sending Slack reports for {len(eligible_users)} Toggl users")
+            print("?? Recipients:")
+            for idx, user_obj in enumerate(eligible_users, start=1):
+                slack_info = f", slack_id={user_obj.slack_user_id}" if user_obj.slack_user_id else ""
+                print(f"   {idx}. {user_obj.display_name} <{user_obj.email}> (toggl_id={user_obj.toggl_user_id}{slack_info})")
+
+        if send_all_users:
+            failures = 0
+            successes = 0
+            for user_obj in eligible_users:
+                user_label = user_obj.display_name or user_obj.email
+                try:
+                    monthly_data, overtime_data, user_report = _generate_user_monthly_report(
+                        user_obj, start_date, end_date, aggregator, overtime_calc, report_gen, storage, year, month
+                    )
+                except Exception as exc:
+                    failures += 1
+                    print(f"   ? Failed to build report for {user_label}: {exc}")
+                    continue
+
+                print(f"   ?? Overtime debug for {user_label}:")
+                print(report_gen.format_overtime_debug(overtime_data))
+
+                if slack_service:
+                    slack_user_id = user_obj.slack_user_id or slack_email_map.get(user_obj.email.lower())
+                    if not slack_user_id:
+                        failures += 1
+                        print(f"   ? Slack user not found for {user_obj.email} (missing email match or deleted user); skipped sending.")
+                        continue
+                    try:
+                        success = slack_service.send_dm(slack_user_id, report_gen.format_user_report_summary(user_report))
+                    except Exception as exc:
+                        success = False
+                        print(f"   ? Slack send exception for {user_label}: {exc}")
+                    status = "sent" if success else "failed"
+                    if success:
+                        successes += 1
+                    else:
+                        failures += 1
+                    print(f"   ?? Slack report {status} for {user_label} (slack_id={slack_user_id})")
+                else:
+                    print(f"   ?? Slack disabled; generated report for {user_label} but not sent.")
+            print(f"? Bulk Slack reporting finished: {successes} sent, {failures} failed")
+            return
+
+        # Generate reports based on parameters
+        if target_user:
+            user_email = target_user.lower()
+            user_obj = next((u for u in users if u.email.lower() == user_email), None)
+            if user_obj:
+                monthly_data, overtime_data, user_report = _generate_user_monthly_report(
+                    user_obj, start_date, end_date, aggregator, overtime_calc, report_gen, storage, year, month
+                )
+                print(f"?? Overtime debug for {user_obj.display_name}:")
+                print(report_gen.format_overtime_debug(overtime_data))
+                csv_file = file_storage.export_user_report_csv(user_report)
+                print(f"? User report exported to: {csv_file}")
+                if slack_service:
+                    slack_service.send_monthly_report(user_obj.email, user_report.to_dict())
+                    print(f"?? Monthly report sent to {user_obj.display_name}")
+            else:
+                print(f"? User {target_user} not found or has no data for this period")
+
         elif role:
-            # Generate report for specific role
             if role == "admin":
+                all_user_data = {}
+                for user in users:
+                    monthly_data, _, _ = _generate_user_monthly_report(
+                        user, start_date, end_date, aggregator, overtime_calc, report_gen, storage, year, month
+                    )
+                    all_user_data[user.email.lower()] = monthly_data
                 admin_reports = report_gen.generate_admin_report(users, all_user_data, year, month)
                 csv_file = file_storage.export_admin_report_csv(admin_reports, year, month)
-                print(f"✅ Admin report exported to: {csv_file}")
-                
+                print(f"? Admin report exported to: {csv_file}")
+
         else:
-            # Generate all reports
-            print("📊 Generating all report types...")
-            
-            # Admin report
+            print("?? Generating all report types...")
+            all_user_data = {}
+            admin_reports: Optional[list] = None
+            for user_obj in users:
+                monthly_data, overtime_data, user_report = _generate_user_monthly_report(
+                    user_obj, start_date, end_date, aggregator, overtime_calc, report_gen, storage, year, month
+                )
+                all_user_data[user_obj.email.lower()] = monthly_data
+                csv_file = file_storage.export_user_report_csv(user_report)
+                print(f"   ? User report for {user_obj.display_name}: {csv_file}")
+                print(report_gen.format_overtime_debug(overtime_data))
+                if send_all_users and slack_service:
+                    success = slack_service.send_monthly_report(user_obj.email, user_report.to_dict())
+                    status = "sent" if success else "failed"
+                    print(f"      ?? Slack report {status} for {user_obj.display_name}")
             admin_reports = report_gen.generate_admin_report(users, all_user_data, year, month)
             admin_csv = file_storage.export_admin_report_csv(admin_reports, year, month)
-            print(f"   ✅ Admin report: {admin_csv}")
-            
-            # Individual user reports
-            for user_obj in users:
-                user_email = user_obj.email.lower()
-                if user_email in all_user_data:
-                    user_data = all_user_data[user_email]
-                    overtime_data = overtime_calc.calculate_user_overtime(user_obj.email, year, month, user_data['daily_data'])
-                    
-                    user_report = report_gen.generate_monthly_user_report(
-                        user_obj.email,
-                        user_obj.display_name,
-                        year,
-                        month,
-                        user_data,
-                        overtime_data,
-                        department=user_obj.department
-                    )
-                    
-                    csv_file = file_storage.export_user_report_csv(user_report)
-                    print(f"   ✅ User report for {user_obj.display_name}: {csv_file}")
-            
-            print(f"✅ Generated all reports for {year}-{month:02d}")
-        
+            print(f"   ? Admin report: {admin_csv}")
+            print(f"? Generated all reports for {year}-{month:02d}")
+
     except Exception as e:
-        print(f"❌ Report generation failed: {e}")
+        print(f"? Report generation failed: {e}")
         raise
 
 
