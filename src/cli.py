@@ -100,8 +100,14 @@ def _sync_range(settings, start_date: date, end_date: date, sync_type: str = "ma
         # Removed duplicate absences log
 
         print("💾 Saving data to database...")
+        print(f"   [DEBUG _sync_range] Saving {len(time_entries)} time entries and {len(absences)} absences")
+        if absences:
+            print(f"   [DEBUG _sync_range] Sample absences before save (first 3):")
+            for abs in absences[:3]:
+                print(f"      {abs.start_date} to {abs.end_date} | type={abs.absence_type} | status={abs.status} | user_email={abs.user_email} | notes={abs.notes[:50] if abs.notes else None}")
         storage.save_time_entries(time_entries)
         storage.save_absences(absences)
+        print(f"   [DEBUG _sync_range] Data saved to SQLite")
 
         storage.log_sync_end(log_id, "success", len(time_entries) + len(absences))
         print("✅ Sync completed successfully!")
@@ -165,46 +171,101 @@ def _generate_user_monthly_report(
     aggregator: DataAggregator,
     overtime_calc: OvertimeCalculator,
     report_gen: ReportGenerator,
+    toggl_service: TogglService,
+    timetastic_service: TimetasticService,
     storage: SQLiteStorage,
     year: int,
     month: int,
+    force_refresh: bool = False,
 ):
     """Fetch cached data, aggregate, calculate overtime and build UserReport."""
     print(f"   [DEBUG] Generating report for {user.email} ({year}-{month:02d})")
     
-    time_entries = storage.get_time_entries_for_user(user.email, start_date, end_date)
-    print(f"   [DEBUG] Storage: Found {len(time_entries)} time entries from SQLite")
-    # Show sample entries
-    if time_entries:
-        print(f"   [DEBUG] Sample time entries (first 7):")
-        for entry in time_entries[:7]:
-            print(f"      {entry.start_time.date()} | {entry.duration_hours:.2f}h | {entry.description[:50]} | user_id={entry.user_id}")
+    # TODO: WRÓCIMY PÓŹNIEJ - SQLite storage dla processed statistics
+    # Wyłączone na razie - nie używamy SQLite do przechowywania processed statistics
+    # Zostajemy przy cache'ach API (Timetastic, Toggl) i bezpośrednim pobieraniu danych z API
+    # 
+    # # Check if processed results exist in SQLite
+    # monthly_stats = None
+    # daily_stats = None
+    # overtime_stats = None
+    # 
+    # if not force_refresh:
+    #     monthly_stats = storage.get_monthly_statistics(user.email, year, month)
+    #     if monthly_stats:
+    #         daily_stats = storage.get_daily_statistics(user.email, year, month)
+    #         overtime_stats = storage.get_overtime_data(user.email, year, month)
+    # 
+    # if monthly_stats and daily_stats and overtime_stats and not force_refresh:
+    #     # Use cached processed results from SQLite
+    #     print(f"   [DEBUG] Using cached processed results from SQLite")
+    #     
+    #     # Reconstruct monthly_data from cached statistics
+    #     monthly_data = {
+    #         'total_hours': monthly_stats['total_hours'],
+    #         'absence_hours': monthly_stats['absence_hours'],
+    #         'working_days': monthly_stats['working_days'],
+    #         'project_hours': monthly_stats['project_hours'],
+    #         'absence_breakdown': monthly_stats['absence_breakdown'],
+    #         'missing_days': monthly_stats['missing_days'],
+    #         'daily_data': daily_stats
+    #     }
+    #     
+    #     # Reconstruct overtime_data from cached statistics
+    #     overtime_data = overtime_stats
+    #     
+    #     print(f"   [DEBUG] Cached: Total hours={monthly_data.get('total_hours', 0):.2f}h")
+    # else:
     
-    absences = storage.get_absences_for_user(user.email, start_date, end_date)
-    print(f"   [DEBUG] Storage: Found {len(absences)} absences from SQLite")
-    # Show sample absences
-    if absences:
-        print(f"   [DEBUG] Sample absences (first 10):")
-        for abs in absences[:10]:
-            print(f"      {abs.start_date} to {abs.end_date} | type={abs.absence_type} | status={abs.status} | user_id={abs.user_id} | user_email={abs.user_email}")
+    # Process from raw data (time entries and absences) - pobieramy bezpośrednio z API
+    print(f"   [DEBUG] Processing from raw data (fetching from API)...")
+    
+    # TODO: WRÓCIMY PÓŹNIEJ - SQLite storage dla raw data
+    # Wyłączone na razie - nie używamy SQLite do przechowywania raw data
+    # time_entries = storage.get_time_entries_for_user(user.email, start_date, end_date)
+    # absences = storage.get_absences_for_user(user.email, start_date, end_date)
+    
+    # Pobieramy dane bezpośrednio z API (używają cache'ów wewnętrznych)
+    start_iso = f"{start_date}T00:00:00Z"
+    end_iso = f"{end_date}T23:59:59Z"
+    
+    # Pobierz time entries z Toggl (używa cache jeśli dostępny) - filtrujemy tylko po user_id
+    user_ids = [user.toggl_user_id] if user.toggl_user_id else None
+    print(f"   [DEBUG] API: Fetching Toggl entries for user_id={user_ids}, user_email={user.email}")
+    all_time_entries = toggl_service.get_time_entries(start_iso, end_iso, user_ids=user_ids)
+    
+    # Filtruj po user_id (Toggl API powinien już zwrócić przefiltrowane, ale na wszelki wypadek filtrujemy lokalnie)
+    if user.toggl_user_id:
+        time_entries = [te for te in all_time_entries if te.user_id == user.toggl_user_id]
+    else:
+        time_entries = all_time_entries
+    
+    print(f"   [DEBUG] API: Found {len(time_entries)} time entries from Toggl API")
+    
+    # Pobierz absences z Timetastic (używa cache jeśli dostępny)
+    timetastic_user_id = user.timetastic_user_id if user.timetastic_user_id else None
+    user_ids_for_absences = [timetastic_user_id] if timetastic_user_id else None
+    absences = timetastic_service.get_holidays(start_iso, end_iso, user_ids=user_ids_for_absences)
+    print(f"   [DEBUG] API: Found {len(absences)} absences from Timetastic API")
     
     monthly_data = aggregator.aggregate_monthly(user.email, year, month, time_entries, absences)
-    print(f"   [DEBUG] Aggregator: Total hours={monthly_data.get('total_hours', 0):.2f}h, Billable={monthly_data.get('billable_hours', 0):.2f}h")
+    print(f"   [DEBUG] Aggregator: Total hours={monthly_data.get('total_hours', 0):.2f}h")
     
-    # Show all days from aggregator
     daily_data = monthly_data.get("daily_data", [])
-    print(f"   [DEBUG] Aggregator: All {len(daily_data)} days:")
-    for day in daily_data:
-        toggl_h = day.get('time_entry_hours', 0.0)
-        total_h = day.get('total_hours', 0.0)
-        absence_h = day.get('absence_hours', 0.0)
-        projects = ', '.join(f"{name}={hours:.1f}h" for name, hours in sorted(day.get('project_hours', {}).items())[:3]) or 'none'
-        print(f"      {day['date']} | toggl={toggl_h:.1f}h | absence={absence_h:.1f}h | total={total_h:.1f}h | projects=[{projects}]")
-    
     overtime_data = overtime_calc.calculate_user_overtime(
         user.email, year, month, daily_data
     )
     print(f"   [DEBUG] OvertimeCalc: Monthly OT={overtime_data.get('monthly_overtime', 0):.2f}h")
+    
+    # Save processed data to SQLite (monthly statistics, daily statistics, overtime data)
+    saved = storage.save_user_monthly_processed_data(user.email, year, month, monthly_data, overtime_data)
+    if saved:
+        print(f"   [DEBUG SQLite] Saved processed data to SQLite for {user.email} ({year}-{month:02d})")
+        print(f"      - Monthly statistics: {monthly_data.get('total_hours', 0):.2f}h total, {monthly_data.get('working_days', 0)} working days")
+        print(f"      - Daily statistics: {len(daily_data)} days")
+        print(f"      - Overtime data: {overtime_data.get('monthly_overtime', 0):.2f}h monthly overtime")
+    else:
+        print(f"   [DEBUG SQLite] Failed to save processed data to SQLite for {user.email} ({year}-{month:02d})")
     
     monthly_report = report_gen.generate_monthly_user_report(
         user_email=user.email,
@@ -390,7 +451,9 @@ def check_missing(days: int):
 @click.option("--role", type=click.Choice(['admin', 'user']), help="Generate report for specific role")
 @click.option("--send-all-users", is_flag=True, default=False, help="Send Slack reports to every user after generating CSVs")
 @click.option("--refresh-cache", is_flag=True, default=False, help="Refresh the target month's data from Toggl/Timetastic before generating reports")
-def report_monthly(year: Optional[int], month: Optional[int], target_user: Optional[str], role: Optional[str], send_all_users: bool, refresh_cache: bool):
+@click.option("--force-refresh", is_flag=True, default=False, help="Force reprocessing of statistics even if cached results exist")
+@click.option("--refresh-projects", is_flag=True, default=False, help="Force refresh projects cache before generating reports")
+def report_monthly(year: Optional[int], month: Optional[int], target_user: Optional[str], role: Optional[str], send_all_users: bool, refresh_cache: bool, force_refresh: bool, refresh_projects: bool):
     """Generate monthly reports."""
     settings = load_settings()
 
@@ -419,8 +482,19 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
 
         # Initialize services
         print(f"[DEBUG] Initializing services for {year}-{month:02d}...")
-        storage = SQLiteStorage(settings)
-        toggl_service = TogglService(settings, storage=storage)  # Create for API tracking
+        storage = SQLiteStorage(settings)  # Still used for user management
+        toggl_service = TogglService(settings, storage=storage)  # Create for API tracking and cache
+        timetastic_service = TimetasticService(settings, storage=storage)  # Create for API tracking and cache
+        
+        # Refresh projects cache if requested
+        if refresh_projects:
+            print(f"[DEBUG] Refreshing projects cache...")
+            try:
+                toggl_service.get_projects(force_refresh=True)
+                print(f"[DEBUG] Projects cache refreshed")
+            except Exception as e:
+                print(f"[DEBUG] Warning: Failed to refresh projects cache: {e}")
+        
         file_storage = FileStorage(settings)
         aggregator = DataAggregator(settings)
         overtime_calc = OvertimeCalculator(settings)
@@ -464,7 +538,8 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
             print("?? Recipients:")
             for idx, user_obj in enumerate(eligible_users, start=1):
                 slack_info = f", slack_id={user_obj.slack_user_id}" if user_obj.slack_user_id else ""
-                print(f"   {idx}. {user_obj.display_name} <{user_obj.email}> (toggl_id={user_obj.toggl_user_id}{slack_info})")
+                timetastic_info = f", timetastic_id={user_obj.timetastic_user_id}" if user_obj.timetastic_user_id else ""
+                print(f"   {idx}. {user_obj.display_name} <{user_obj.email}> (toggl_id={user_obj.toggl_user_id}{timetastic_info}{slack_info})")
 
         if send_all_users:
             failures = 0
@@ -473,7 +548,7 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
                 user_label = user_obj.display_name or user_obj.email
                 try:
                     monthly_data, overtime_data, user_report = _generate_user_monthly_report(
-                        user_obj, start_date, end_date, aggregator, overtime_calc, report_gen, storage, year, month
+                        user_obj, start_date, end_date, aggregator, overtime_calc, report_gen, toggl_service, timetastic_service, storage, year, month, force_refresh
                     )
                 except Exception as exc:
                     failures += 1
@@ -511,7 +586,7 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
             user_obj = next((u for u in users if u.email.lower() == user_email), None)
             if user_obj:
                 monthly_data, overtime_data, user_report = _generate_user_monthly_report(
-                    user_obj, start_date, end_date, aggregator, overtime_calc, report_gen, storage, year, month
+                    user_obj, start_date, end_date, aggregator, overtime_calc, report_gen, toggl_service, timetastic_service, storage, year, month
                 )
                 print(f"?? Overtime debug for {user_obj.display_name}:")
                 print(report_gen.format_overtime_debug(overtime_data))
@@ -528,7 +603,7 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
                 all_user_data = {}
                 for user in users:
                     monthly_data, _, _ = _generate_user_monthly_report(
-                        user, start_date, end_date, aggregator, overtime_calc, report_gen, storage, year, month
+                        user, start_date, end_date, aggregator, overtime_calc, report_gen, toggl_service, timetastic_service, storage, year, month, force_refresh
                     )
                     all_user_data[user.email.lower()] = monthly_data
                 admin_reports = report_gen.generate_admin_report(users, all_user_data, year, month)
@@ -541,7 +616,7 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
             admin_reports: Optional[list] = None
             for user_obj in users:
                 monthly_data, overtime_data, user_report = _generate_user_monthly_report(
-                    user_obj, start_date, end_date, aggregator, overtime_calc, report_gen, storage, year, month
+                    user_obj, start_date, end_date, aggregator, overtime_calc, report_gen, toggl_service, timetastic_service, storage, year, month
                 )
                 all_user_data[user_obj.email.lower()] = monthly_data
                 csv_file = file_storage.export_user_report_csv(user_report)

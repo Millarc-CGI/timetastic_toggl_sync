@@ -217,11 +217,12 @@ class ReportGenerator:
         lines = []
         monthly_total = overtime_data.get("monthly_total_hours", 0.0)
         monthly_expected = overtime_data.get("monthly_expected_hours", 0.0)
+        monthly_overtime = overtime_data.get('monthly_overtime', 0.0)
         lines.append(
             f"   - monthly: worked={monthly_total:.2f}h expected={monthly_expected:.2f}h "
-            f"delta={overtime_data.get('monthly_overtime', 0.0):.2f}h"
+            f"overtime={monthly_overtime:.2f}h"
         )
-        lines.append(f"   - daily overtime total: {overtime_data.get('daily_overtime', 0.0):.2f}h")
+        lines.append(f"   - daily overtime total: {monthly_overtime:.2f}h")
         lines.append(f"   - weekend overtime: {overtime_data.get('weekend_overtime', 0.0):.2f}h")
         weekly_breakdown = overtime_data.get("weekly_breakdown", {}) or {}
         if weekly_breakdown:
@@ -230,8 +231,74 @@ class ReportGenerator:
                 lines.append(
                     f"       {week_start}: worked={info.get('total_hours', 0.0):.2f}h "
                     f"expected={info.get('expected_hours', 0.0):.2f}h "
-                    f"delta={info.get('overtime', 0.0):.2f}h"
+                    f"overtime={info.get('overtime', 0.0):.2f}h"
                 )
+        return "\n".join(lines)
+    
+    def format_overtime_table(self, daily_data: List[Dict[str, Any]], overtime_data: Dict[str, Any]) -> str:
+        """Format detailed overtime table with daily breakdown, weekly and monthly totals."""
+        lines = []
+        
+        # Get daily breakdown from overtime_data
+        daily_breakdown = overtime_data.get('daily_breakdown', [])
+        
+        # Create a map of date -> breakdown info for quick lookup
+        breakdown_map = {item['date']: item for item in daily_breakdown}
+        
+        # Header
+        lines.append("Date        | Toggl  | Total  | OT hours | Type")
+        lines.append("-" * 60)
+        
+        # Daily rows
+        for day in daily_data:
+            date_obj = day['date']
+            toggl_h = day.get('time_entry_hours', 0.0)
+            total_h = day.get('total_hours', 0.0)
+            
+            # Get overtime info from breakdown
+            breakdown_info = breakdown_map.get(date_obj, {})
+            ot_hours = breakdown_info.get('hours', 0.0)
+            day_type = breakdown_info.get('type', 'weekday')
+            
+            # Format type - check if it's actually a weekend from daily_data
+            is_weekend = day.get('is_weekend', False)
+            if is_weekend or day_type == 'weekend':
+                type_str = 'weekend'
+            else:
+                type_str = 'normal'
+            
+            lines.append(
+                f"{date_obj} | {toggl_h:6.1f}h | {total_h:6.1f}h | {ot_hours:8.1f}h | {type_str}"
+            )
+        
+        lines.append("")
+        
+        # Weekly totals
+        lines.append("Weekly totals:")
+        weekly_breakdown = overtime_data.get('weekly_breakdown', {}) or {}
+        for week_start in sorted(weekly_breakdown.keys()):
+            info = weekly_breakdown[week_start]
+            worked = info.get('total_hours', 0.0)
+            expected = info.get('expected_hours', 0.0)
+            overtime = info.get('overtime', 0.0)
+            lines.append(
+                f"  Week starting {week_start}: worked={worked:.2f}h, expected={expected:.2f}h, overtime={overtime:.2f}h"
+            )
+        
+        lines.append("")
+        
+        # Monthly totals
+        lines.append("Monthly totals:")
+        monthly_total = overtime_data.get('monthly_total_hours', 0.0)
+        monthly_expected = overtime_data.get('monthly_expected_hours', 0.0)
+        monthly_overtime = overtime_data.get('monthly_overtime', 0.0)
+        weekend_overtime = overtime_data.get('weekend_overtime', 0.0)
+        
+        lines.append(f"  Worked hours:   {monthly_total:.2f}h")
+        lines.append(f"  Expected hours: {monthly_expected:.2f}h")
+        lines.append(f"  Monthly overtime: {monthly_overtime:.2f}h")
+        lines.append(f"  Weekend overtime: {weekend_overtime:.2f}h")
+        
         return "\n".join(lines)
     
     def format_admin_summary(self, reports: List[UserReport]) -> str:

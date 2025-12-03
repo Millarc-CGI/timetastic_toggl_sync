@@ -64,11 +64,53 @@ class TimetasticService:
         except Exception:
             return False
     
-    def get_users(self) -> List[Dict[str, Any]]:
-        """Get list of all users in the organization."""
+    def get_users(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
+        """Get list of all users in the organization with caching (TTL 30 days)."""
+        cache_path = self._users_cache_path()
+        
+        # Check cache metadata if storage is available and not forcing refresh
+        if not force_refresh and self.storage:
+            # Use workspace_id=-1, year=0, month=0 for users (not workspace/month-specific, different from public holidays)
+            cache_metadata = self.storage.get_cache_metadata(-1, 0, 0)
+            
+            if cache_metadata:
+                is_fresh, has_dirty = self._is_users_cache_fresh(cache_metadata)
+                
+                # Use cache if fresh and no dirty ranges
+                if is_fresh and not has_dirty:
+                    cached_users = self._load_cached_users(cache_path)
+                    if cached_users is not None:
+                        self._users_cache = cached_users
+                        print(f"   [DEBUG TimetasticCache] Using fresh users cache: {len(cached_users)} users")
+                        return cached_users
+                elif is_fresh and has_dirty:
+                    # Cache is fresh but has dirty ranges - use stale cache but queue refresh
+                    cached_users = self._load_cached_users(cache_path)
+                    if cached_users is not None:
+                        self._users_cache = cached_users
+                        print(f"   [DEBUG TimetasticCache] Using stale users cache (has dirty ranges): {len(cached_users)} users")
+                        return cached_users
+            else:
+                # No metadata - try to load from file cache if exists
+                cached_users = self._load_cached_users(cache_path)
+                if cached_users is not None:
+                    self._users_cache = cached_users
+                    print(f"   [DEBUG TimetasticCache] Using file users cache (no metadata): {len(cached_users)} users")
+                    return cached_users
+        elif not force_refresh:
+            # Fallback to file cache only if no storage
+            cached_users = self._load_cached_users(cache_path)
+            if cached_users is not None:
+                self._users_cache = cached_users
+                print(f"   [DEBUG TimetasticCache] Using file users cache (no storage): {len(cached_users)} users")
+                return cached_users
+        
+        # Check in-memory cache
         if self._users_cache is not None:
             return self._users_cache
         
+        # Fetch from API
+        print(f"   [DEBUG TimetasticCache] Fetching users from API...")
         users = []
         page = 1
         
@@ -93,7 +135,34 @@ class TimetasticService:
             
             page += 1
         
+        print(f"   [DEBUG TimetasticCache] Fetched {len(users)} users from API")
         self._users_cache = users
+        
+        # Store cache and update metadata
+        if users and cache_path:
+            self._store_cached_users(cache_path, users)
+            
+            # Update cache metadata
+            if self.storage:
+                data_hash = self._calculate_users_hash(users)
+                
+                # Check if hash changed (data was modified)
+                existing_metadata = self.storage.get_cache_metadata(-1, 0, 0)
+                if existing_metadata and existing_metadata.get('data_hash'):
+                    old_hash = existing_metadata.get('data_hash')
+                    if old_hash != data_hash:
+                        # Data changed - mark as dirty for next refresh
+                        pass
+                
+                # Update metadata with new hash
+                self.storage.set_cache_metadata(
+                    -1,  # workspace_id=-1 for users (org-wide, different from public holidays which use 0)
+                    0,  # year=0 for users (not year-specific)
+                    0,  # month=0 for users (not month-specific)
+                    data_hash=data_hash,
+                    clear_dirty=True
+                )
+        
         return users
     
     def get_user(self, user_id: int) -> Dict[str, Any]:
@@ -164,6 +233,7 @@ class TimetasticService:
                         raw_holidays = disk_payload
                         self._holidays_cache[cache_key] = raw_holidays
                         should_fetch = False
+                        print(f"   [DEBUG TimetasticCache] Using stale cache (has dirty ranges): {len(raw_holidays)} holidays from file cache ({start_obj} to {end_obj})")
                         # Queue refresh for dirty ranges
                         dirty_ranges = cache_metadata.get('dirty_ranges', [])
                         for dr in dirty_ranges:
@@ -180,6 +250,7 @@ class TimetasticService:
                     raw_holidays = disk_payload
                     self._holidays_cache[cache_key] = raw_holidays
                     should_fetch = False
+                    print(f"   [DEBUG TimetasticCache] Using file cache (no metadata): {len(raw_holidays)} holidays ({start_obj} to {end_obj})")
         elif cacheable and start_obj and end_obj:
             # Fallback to file cache only if no storage
             disk_cache_path = self._holidays_cache_path(start_obj, end_obj)
@@ -188,13 +259,16 @@ class TimetasticService:
                 raw_holidays = disk_payload
                 self._holidays_cache[cache_key] = raw_holidays
                 should_fetch = False
+                print(f"   [DEBUG TimetasticCache] Using file cache (no storage): {len(raw_holidays)} holidays ({start_obj} to {end_obj})")
 
         if not raw_holidays and should_fetch:
             cached = self._holidays_cache.get(cache_key)
             if cached is not None:
                 raw_holidays = cached
+                print(f"   [DEBUG TimetasticCache] Using in-memory cache: {len(raw_holidays)} holidays ({start_obj} to {end_obj})")
             else:
                 # Fetch holidays with pagination
+                print(f"   [DEBUG TimetasticCache] Fetching from API ({start_obj} to {end_obj})...")
                 raw_holidays = []
                 page = 1
                 
@@ -217,6 +291,7 @@ class TimetasticService:
                     
                     page += 1
                 
+                print(f"   [DEBUG TimetasticCache] Fetched {len(raw_holidays)} holidays from API")
                 self._holidays_cache[cache_key] = raw_holidays
                 
                 # Store cache and update metadata if cacheable
@@ -263,15 +338,24 @@ class TimetasticService:
         
         # Add public holidays - they apply to all users
         # If user_ids specified, add public holidays for those users; otherwise add for all
+        public_holidays_count = 0
         if user_ids:
             # Add public holidays for each requested user
             for user_id in user_ids:
                 public_holidays = self._filter_public_holidays_by_range(start_date, end_date, user_id)
-                absences.extend(public_holidays)
+                # Deduplicate public holidays
+                seen_keys = set()
+                for ph in public_holidays:
+                    key = (ph.start_date, ph.notes or "")
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        absences.append(ph)
+                public_holidays_count += len(seen_keys)
         else:
             # No user filter - add public holidays without user_id (they apply to everyone)
             public_holidays = self._filter_public_holidays_by_range(start_date, end_date, None)
             absences.extend(public_holidays)
+            public_holidays_count = len(public_holidays)
         
         return absences
 
@@ -306,6 +390,14 @@ class TimetasticService:
 
     def _holidays_cache_path(self, start: date, end: date) -> Path:
         return self._holidays_cache_dir / f"{start:%Y%m%d}_{end:%Y%m%d}.json"
+    
+    def _public_holidays_cache_path(self) -> Path:
+        """Get cache path for public holidays."""
+        return self._timetastic_cache_dir / "public_holidays.json"
+    
+    def _users_cache_path(self) -> Path:
+        """Get cache path for users."""
+        return self._timetastic_cache_dir / "users.json"
 
     @staticmethod
     def _is_cacheable_range(start: Optional[date], end: Optional[date]) -> bool:
@@ -327,6 +419,22 @@ class TimetasticService:
             return ""
         
         # Create a hash based on holiday IDs and updated_at timestamps
+        hash_data = []
+        for holiday in holidays:
+            holiday_id = holiday.get('id') or holiday.get('Id')
+            updated_at = holiday.get('updatedAt') or holiday.get('updated_at') or holiday.get('at')
+            hash_data.append(f"{holiday_id}:{updated_at}")
+        
+        hash_data.sort()
+        hash_string = "|".join(hash_data)
+        return hashlib.md5(hash_string.encode('utf-8')).hexdigest()
+    
+    def _calculate_public_holidays_hash(self, holidays: List[Dict[str, Any]]) -> str:
+        """Calculate hash of public holidays data for change detection."""
+        if not holidays:
+            return ""
+        
+        # Create a hash based on public holiday IDs and updated_at timestamps
         hash_data = []
         for holiday in holidays:
             holiday_id = holiday.get('id') or holiday.get('Id')
@@ -378,6 +486,86 @@ class TimetasticService:
             return is_fresh, has_dirty
         except (ValueError, TypeError):
             return False, False
+    
+    def _is_public_holidays_cache_fresh(self, cache_metadata: Optional[Dict[str, Any]]) -> tuple[bool, bool]:
+        """
+        Check if public holidays cache is fresh. Returns (is_fresh, has_dirty_ranges).
+        
+        Public holidays cache TTL: 90 days
+        """
+        if not cache_metadata or not cache_metadata.get('last_full_fetch'):
+            return False, False
+        
+        try:
+            last_fetch = datetime.fromisoformat(cache_metadata['last_full_fetch'])
+            days_old = (datetime.now() - last_fetch).days
+            
+            # Public holidays cache TTL is 90 days
+            ttl_days = 90
+            
+            is_fresh = days_old < ttl_days
+            has_dirty = bool(cache_metadata.get('dirty_ranges'))
+            
+            return is_fresh, has_dirty
+        except (ValueError, TypeError):
+            return False, False
+    
+    def _is_users_cache_fresh(self, cache_metadata: Optional[Dict[str, Any]]) -> tuple[bool, bool]:
+        """
+        Check if users cache is fresh. Returns (is_fresh, has_dirty_ranges).
+        
+        Users cache TTL: 30 days
+        """
+        if not cache_metadata or not cache_metadata.get('last_full_fetch'):
+            return False, False
+        
+        try:
+            last_fetch = datetime.fromisoformat(cache_metadata['last_full_fetch'])
+            days_old = (datetime.now() - last_fetch).days
+            
+            # Users cache TTL is 30 days
+            ttl_days = 30
+            
+            is_fresh = days_old < ttl_days
+            has_dirty = bool(cache_metadata.get('dirty_ranges'))
+            
+            return is_fresh, has_dirty
+        except (ValueError, TypeError):
+            return False, False
+    
+    def _calculate_users_hash(self, users: List[Dict[str, Any]]) -> str:
+        """Calculate hash of users data for change detection."""
+        if not users:
+            return ""
+        
+        # Create a hash based on user IDs and updated_at timestamps
+        hash_data = []
+        for user in users:
+            user_id = user.get('id') or user.get('Id')
+            updated_at = user.get('updatedAt') or user.get('updated_at') or user.get('at')
+            hash_data.append(f"{user_id}:{updated_at}")
+        
+        hash_data.sort()
+        hash_string = "|".join(hash_data)
+        return hashlib.md5(hash_string.encode('utf-8')).hexdigest()
+    
+    def _load_cached_users(self, path: Path) -> Optional[List[Dict[str, Any]]]:
+        """Load cached users from file."""
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except FileNotFoundError:
+            return None
+        except Exception:
+            return None
+    
+    def _store_cached_users(self, path: Path, users: List[Dict[str, Any]]) -> None:
+        """Store users cache to file."""
+        try:
+            with path.open("w", encoding="utf-8") as handle:
+                json.dump(users, handle)
+        except Exception:
+            pass
 
     def _load_cached_holidays(self, path: Path) -> Optional[List[Dict[str, Any]]]:
         try:
@@ -389,6 +577,24 @@ class TimetasticService:
             return None
 
     def _store_cached_holidays(self, path: Path, payload: List[Dict[str, Any]]) -> None:
+        try:
+            with path.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+        except Exception:
+            pass
+    
+    def _load_cached_public_holidays(self, path: Path) -> Optional[List[Dict[str, Any]]]:
+        """Load cached public holidays from file."""
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except FileNotFoundError:
+            return None
+        except Exception:
+            return None
+    
+    def _store_cached_public_holidays(self, path: Path, payload: List[Dict[str, Any]]) -> None:
+        """Store public holidays cache to file."""
         try:
             with path.open("w", encoding="utf-8") as handle:
                 json.dump(payload, handle)
@@ -418,9 +624,25 @@ class TimetasticService:
         end_date: str,
     ) -> List[Absence]:
         """Get holidays for specific user."""
+        # Debug: Show call stack to identify caller
+        import traceback
+        call_stack = traceback.extract_stack()
+        caller_info = call_stack[-2] if len(call_stack) > 1 else None
+        caller_name = caller_info.name if caller_info else "unknown"
+        caller_file = Path(caller_info.filename).name if caller_info else "unknown"
+        print(f"   [DEBUG get_user_holidays] Called from {caller_file}:{caller_name}() | user_id={user_id} | range={start_date} to {end_date}")
+        
+        print(f"   [DEBUG get_user_holidays] Fetching user_absences via get_holidays(user_ids=[{user_id}])...")
         user_absences = self.get_holidays(start_date, end_date, [user_id])
+        print(f"   [DEBUG get_user_holidays] Got {len(user_absences)} user_absences")
+        
+        print(f"   [DEBUG get_user_holidays] Fetching public_holidays via _filter_public_holidays_by_range(user_id={user_id})...")
         public_holidays = self._filter_public_holidays_by_range(start_date, end_date, user_id)
-        return user_absences + public_holidays
+        print(f"   [DEBUG get_user_holidays] Got {len(public_holidays)} public_holidays")
+        
+        result = user_absences + public_holidays
+        print(f"   [DEBUG get_user_holidays] Returning {len(result)} total absences ({len(user_absences)} user + {len(public_holidays)} public)")
+        return result
     
     def get_departments(self) -> List[Dict[str, Any]]:
         """Get list of departments."""
@@ -448,11 +670,80 @@ class TimetasticService:
             return {}
 
     def get_public_holidays(self) -> List[Absence]:
-        """Fetch all configured public holidays for the account."""
+        """Fetch all configured public holidays for the account with caching (TTL 90 days)."""
+        cache_path = self._public_holidays_cache_path()
+        
+        # Check cache metadata if storage is available
+        if self.storage:
+            # Use workspace_id=0, year=0, month=0 for public holidays (not workspace/month-specific)
+            cache_metadata = self.storage.get_cache_metadata(0, 0, 0)
+            
+            if cache_metadata:
+                is_fresh, has_dirty = self._is_public_holidays_cache_fresh(cache_metadata)
+                
+                # Use cache if fresh and no dirty ranges
+                if is_fresh and not has_dirty:
+                    cached_data = self._load_cached_public_holidays(cache_path)
+                    if cached_data is not None:
+                        # Convert cached JSON to Absence objects
+                        holidays = []
+                        for record in cached_data:
+                            try:
+                                holidays.append(Absence.from_public_holiday(record))
+                            except Exception as exc:
+                                print(f"Warning: Failed to parse cached public holiday {record.get('id', 'unknown')}: {exc}")
+                        
+                        if holidays:
+                            self._public_holidays_cache = holidays
+                            return list(holidays)
+                elif is_fresh and has_dirty:
+                    # Cache is fresh but has dirty ranges - use stale cache but queue refresh
+                    cached_data = self._load_cached_public_holidays(cache_path)
+                    if cached_data is not None:
+                        holidays = []
+                        for record in cached_data:
+                            try:
+                                holidays.append(Absence.from_public_holiday(record))
+                            except Exception as exc:
+                                print(f"Warning: Failed to parse cached public holiday {record.get('id', 'unknown')}: {exc}")
+                        
+                        if holidays:
+                            self._public_holidays_cache = holidays
+                            return list(holidays)
+            else:
+                # No metadata - try to load from file cache if exists
+                cached_data = self._load_cached_public_holidays(cache_path)
+                if cached_data is not None:
+                    holidays = []
+                    for record in cached_data:
+                        try:
+                            holidays.append(Absence.from_public_holiday(record))
+                        except Exception as exc:
+                            print(f"Warning: Failed to parse cached public holiday {record.get('id', 'unknown')}: {exc}")
+                    
+                    if holidays:
+                        self._public_holidays_cache = holidays
+                        return list(holidays)
+        else:
+            # Fallback to file cache only if no storage
+            cached_data = self._load_cached_public_holidays(cache_path)
+            if cached_data is not None:
+                holidays = []
+                for record in cached_data:
+                    try:
+                        holidays.append(Absence.from_public_holiday(record))
+                    except Exception as exc:
+                        print(f"Warning: Failed to parse cached public holiday {record.get('id', 'unknown')}: {exc}")
+                
+                if holidays:
+                    self._public_holidays_cache = holidays
+                    return list(holidays)
+        
+        # Check in-memory cache
         if self._public_holidays_cache is not None:
-            print(f"   [DEBUG] Public Holidays API: Using cached data ({len(self._public_holidays_cache)} holidays)")
             return list(self._public_holidays_cache)
 
+        # Fetch from API
         print(f"   [DEBUG] Public Holidays API: Fetching from Timetastic /publicholidays...")
         try:
             data = self._make_request("/publicholidays")
@@ -475,6 +766,32 @@ class TimetasticService:
                 print(f"Warning: Failed to parse public holiday {record.get('id', 'unknown')}: {exc}")
 
         print(f"   [DEBUG] Public Holidays API: Successfully parsed {len(holidays)} public holidays")
+        
+        # Store cache and update metadata
+        if records and cache_path:
+            self._store_cached_public_holidays(cache_path, records)
+            
+            # Update cache metadata
+            if self.storage:
+                data_hash = self._calculate_public_holidays_hash(records)
+                
+                # Check if hash changed (data was modified)
+                existing_metadata = self.storage.get_cache_metadata(0, 0, 0)
+                if existing_metadata and existing_metadata.get('data_hash'):
+                    old_hash = existing_metadata.get('data_hash')
+                    if old_hash != data_hash:
+                        # Data changed - mark as dirty for next refresh
+                        pass
+                
+                # Update metadata with new hash
+                self.storage.set_cache_metadata(
+                    0,  # workspace_id=0 for public holidays (org-wide)
+                    0,  # year=0 for public holidays (not year-specific)
+                    0,  # month=0 for public holidays (not month-specific)
+                    data_hash=data_hash,
+                    clear_dirty=True
+                )
+        
         self._public_holidays_cache = holidays
         return list(holidays)
 
@@ -484,11 +801,7 @@ class TimetasticService:
         start_date = self._parse_iso_to_date(start_iso)
         end_date = self._parse_iso_to_date(end_iso)
         
-        print(f"   [DEBUG] Public Holidays Filter: Checking range {start_date} to {end_date} (user_id={user_id})")
-        print(f"   [DEBUG] Public Holidays Filter: Total available holidays: {len(holidays)}")
-        
         if not start_date or not end_date:
-            print(f"   [DEBUG] Public Holidays Filter: Invalid date range, returning all holidays")
             return [
                 replace(holiday, user_id=user_id)
                 for holiday in holidays
@@ -498,9 +811,7 @@ class TimetasticService:
         for holiday in holidays:
             if start_date <= holiday.start_date <= end_date:
                 filtered.append(replace(holiday, user_id=user_id))
-                print(f"   [DEBUG] Public Holidays Filter: Found {holiday.start_date} - {holiday.notes or 'No name'}")
         
-        print(f"   [DEBUG] Public Holidays Filter: Found {len(filtered)} public holidays in range {start_date} to {end_date}")
         return filtered
 
     @staticmethod

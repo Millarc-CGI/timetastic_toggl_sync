@@ -79,21 +79,149 @@ class TogglService:
         """Get list of workspaces."""
         return self._make_request("/workspaces")
     
-    def get_projects(self, workspace_id: Optional[int] = None) -> List[Dict[str, Any]]:
-        """Get list of projects in workspace."""
+    def get_projects(self, workspace_id: Optional[int] = None, force_refresh: bool = False) -> List[Dict[str, Any]]:
+        """Get list of projects in workspace with caching (TTL 30 days)."""
         workspace = workspace_id or self.workspace_id
         if not workspace:
             raise ValueError("Workspace ID is required")
         
-        return self._make_request(f"/workspaces/{workspace}/projects")
+        workspace_key = str(workspace)
+        cache_path = self._projects_cache_path(workspace)
+        
+        # Check cache metadata if storage is available and not forcing refresh
+        if not force_refresh and self.storage:
+            # Use workspace_id as cache key, year=0, month=0 for projects (not month-specific)
+            cache_metadata = self.storage.get_cache_metadata(int(workspace), 0, 0)
+            
+            if cache_metadata:
+                is_fresh, has_dirty = self._is_projects_cache_fresh(cache_metadata)
+                
+                # Use cache if fresh and no dirty ranges
+                if is_fresh and not has_dirty:
+                    cached_projects = self._load_cached_projects(cache_path)
+                    if cached_projects is not None:
+                        return cached_projects
+                elif is_fresh and has_dirty:
+                    # Cache is fresh but has dirty ranges - use stale cache but queue refresh
+                    cached_projects = self._load_cached_projects(cache_path)
+                    if cached_projects is not None:
+                        return cached_projects
+            else:
+                # No metadata - try to load from file cache if exists
+                cached_projects = self._load_cached_projects(cache_path)
+                if cached_projects is not None:
+                    return cached_projects
+        elif not force_refresh:
+            # Fallback to file cache only if no storage
+            cached_projects = self._load_cached_projects(cache_path)
+            if cached_projects is not None:
+                return cached_projects
+        
+        # Fetch from API
+        projects = self._make_request(f"/workspaces/{workspace}/projects")
+        
+        # Store cache and update metadata
+        if projects and cache_path:
+            self._store_cached_projects(cache_path, projects)
+            
+            # Update cache metadata
+            if self.storage:
+                data_hash = self._calculate_projects_hash(projects)
+                
+                # Check if hash changed (data was modified)
+                existing_metadata = self.storage.get_cache_metadata(int(workspace), 0, 0)
+                if existing_metadata and existing_metadata.get('data_hash'):
+                    old_hash = existing_metadata.get('data_hash')
+                    if old_hash != data_hash:
+                        # Data changed - mark as dirty for next refresh
+                        # For projects, we don't use date ranges, so we just update the hash
+                        pass
+                
+                # Update metadata with new hash
+                self.storage.set_cache_metadata(
+                    int(workspace),
+                    0,  # year=0 for projects (not month-specific)
+                    0,  # month=0 for projects (not month-specific)
+                    data_hash=data_hash,
+                    clear_dirty=True
+                )
+        
+        return projects
     
-    def get_workspace_users(self, workspace_id: Optional[int] = None) -> List[Dict[str, Any]]:
-        """Get list of users in workspace."""
+    def get_workspace_users(self, workspace_id: Optional[int] = None, force_refresh: bool = False) -> List[Dict[str, Any]]:
+        """Get list of users in workspace with caching (TTL 30 days)."""
         workspace = workspace_id or self.workspace_id
         if not workspace:
             raise ValueError("Workspace ID is required")
         
-        return self._make_request(f"/workspaces/{workspace}/users")
+        workspace_key = str(workspace)
+        cache_path = self._users_cache_path(workspace)
+        
+        # Check cache metadata if storage is available and not forcing refresh
+        if not force_refresh and self.storage:
+            # Use workspace_id=-workspace-1 for users (different from projects which use workspace_id)
+            # This ensures users and projects don't share the same cache metadata entry
+            cache_metadata = self.storage.get_cache_metadata(-int(workspace) - 1, 0, 0)
+            
+            if cache_metadata:
+                is_fresh, has_dirty = self._is_users_cache_fresh(cache_metadata)
+                
+                # Use cache if fresh and no dirty ranges
+                if is_fresh and not has_dirty:
+                    cached_users = self._load_cached_users(cache_path)
+                    if cached_users is not None:
+                        print(f"   [DEBUG TogglCache] Using fresh users cache: {len(cached_users)} users")
+                        return cached_users
+                elif is_fresh and has_dirty:
+                    # Cache is fresh but has dirty ranges - use stale cache but queue refresh
+                    cached_users = self._load_cached_users(cache_path)
+                    if cached_users is not None:
+                        print(f"   [DEBUG TogglCache] Using stale users cache (has dirty ranges): {len(cached_users)} users")
+                        return cached_users
+            else:
+                # No metadata - try to load from file cache if exists
+                cached_users = self._load_cached_users(cache_path)
+                if cached_users is not None:
+                    print(f"   [DEBUG TogglCache] Using file users cache (no metadata): {len(cached_users)} users")
+                    return cached_users
+        elif not force_refresh:
+            # Fallback to file cache only if no storage
+            cached_users = self._load_cached_users(cache_path)
+            if cached_users is not None:
+                print(f"   [DEBUG TogglCache] Using file users cache (no storage): {len(cached_users)} users")
+                return cached_users
+        
+        # Fetch from API
+        print(f"   [DEBUG TogglCache] Fetching users from API...")
+        users = self._make_request(f"/workspaces/{workspace}/users")
+        print(f"   [DEBUG TogglCache] Fetched {len(users)} users from API")
+        
+        # Store cache and update metadata
+        if users and cache_path:
+            self._store_cached_users(cache_path, users)
+            
+            # Update cache metadata
+            if self.storage:
+                data_hash = self._calculate_users_hash(users)
+                
+                # Check if hash changed (data was modified)
+                existing_metadata = self.storage.get_cache_metadata(-int(workspace) - 1, 0, 0)
+                if existing_metadata and existing_metadata.get('data_hash'):
+                    old_hash = existing_metadata.get('data_hash')
+                    if old_hash != data_hash:
+                        # Data changed - mark as dirty for next refresh
+                        pass
+                
+                # Update metadata with new hash
+                self.storage.set_cache_metadata(
+                    -int(workspace) - 1,  # workspace_id=-workspace-1 for users (different from projects)
+                    0,  # year=0 for users (not month-specific)
+                    0,  # month=0 for users (not month-specific)
+                    data_hash=data_hash,
+                    clear_dirty=True
+                )
+        
+        return users
 
     def get_project_tasks(self, project_id: int, workspace_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """Get list of tasks for a project."""
@@ -501,6 +629,20 @@ class TogglService:
         workspace_dir = self._toggl_cache_dir / workspace_key
         workspace_dir.mkdir(parents=True, exist_ok=True)
         return workspace_dir / f"{start:%Y%m%d}_{end:%Y%m%d}.json"
+    
+    def _projects_cache_path(self, workspace: Optional[Any]) -> Path:
+        """Get cache path for projects."""
+        workspace_key = str(workspace or self.workspace_id or "default")
+        workspace_dir = self._toggl_cache_dir / workspace_key
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        return workspace_dir / "projects.json"
+    
+    def _users_cache_path(self, workspace: Optional[Any]) -> Path:
+        """Get cache path for users."""
+        workspace_key = str(workspace or self.workspace_id or "default")
+        workspace_dir = self._toggl_cache_dir / workspace_key
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        return workspace_dir / "users.json"
 
     @staticmethod
     def _parse_iso_to_date(value: Optional[str]) -> Optional[date]:
@@ -536,6 +678,22 @@ class TogglService:
             entry_id = entry.get('id') or entry.get('time_entry_id')
             updated_at = entry.get('updated_at') or entry.get('at')
             hash_data.append(f"{entry_id}:{updated_at}")
+        
+        hash_data.sort()
+        hash_string = "|".join(hash_data)
+        return hashlib.md5(hash_string.encode('utf-8')).hexdigest()
+    
+    def _calculate_projects_hash(self, projects: List[Dict[str, Any]]) -> str:
+        """Calculate hash of projects data for change detection."""
+        if not projects:
+            return ""
+        
+        # Create a hash based on project IDs and updated_at timestamps
+        hash_data = []
+        for project in projects:
+            project_id = project.get('id') or project.get('project_id')
+            updated_at = project.get('at') or project.get('updated_at') or project.get('server_deleted_at')
+            hash_data.append(f"{project_id}:{updated_at}")
         
         hash_data.sort()
         hash_string = "|".join(hash_data)
@@ -583,6 +741,86 @@ class TogglService:
             return is_fresh, has_dirty
         except (ValueError, TypeError):
             return False, False
+    
+    def _is_projects_cache_fresh(self, cache_metadata: Optional[Dict[str, Any]]) -> tuple[bool, bool]:
+        """
+        Check if projects cache is fresh. Returns (is_fresh, has_dirty_ranges).
+        
+        Projects cache TTL: 30 days (monthly refresh)
+        """
+        if not cache_metadata or not cache_metadata.get('last_full_fetch'):
+            return False, False
+        
+        try:
+            last_fetch = datetime.fromisoformat(cache_metadata['last_full_fetch'])
+            days_old = (datetime.now() - last_fetch).days
+            
+            # Projects cache TTL is 30 days
+            ttl_days = 30
+            
+            is_fresh = days_old < ttl_days
+            has_dirty = bool(cache_metadata.get('dirty_ranges'))
+            
+            return is_fresh, has_dirty
+        except (ValueError, TypeError):
+            return False, False
+    
+    def _is_users_cache_fresh(self, cache_metadata: Optional[Dict[str, Any]]) -> tuple[bool, bool]:
+        """
+        Check if users cache is fresh. Returns (is_fresh, has_dirty_ranges).
+        
+        Users cache TTL: 30 days
+        """
+        if not cache_metadata or not cache_metadata.get('last_full_fetch'):
+            return False, False
+        
+        try:
+            last_fetch = datetime.fromisoformat(cache_metadata['last_full_fetch'])
+            days_old = (datetime.now() - last_fetch).days
+            
+            # Users cache TTL is 30 days
+            ttl_days = 30
+            
+            is_fresh = days_old < ttl_days
+            has_dirty = bool(cache_metadata.get('dirty_ranges'))
+            
+            return is_fresh, has_dirty
+        except (ValueError, TypeError):
+            return False, False
+    
+    def _calculate_users_hash(self, users: List[Dict[str, Any]]) -> str:
+        """Calculate hash of users data for change detection."""
+        if not users:
+            return ""
+        
+        # Create a hash based on user IDs and updated_at timestamps
+        hash_data = []
+        for user in users:
+            user_id = user.get('id') or user.get('user_id')
+            updated_at = user.get('updated_at') or user.get('at') or user.get('modified_at')
+            hash_data.append(f"{user_id}:{updated_at}")
+        
+        hash_data.sort()
+        hash_string = "|".join(hash_data)
+        return hashlib.md5(hash_string.encode('utf-8')).hexdigest()
+    
+    def _load_cached_users(self, path: Path) -> Optional[List[Dict[str, Any]]]:
+        """Load cached users from file."""
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except FileNotFoundError:
+            return None
+        except Exception:
+            return None
+    
+    def _store_cached_users(self, path: Path, users: List[Dict[str, Any]]) -> None:
+        """Store users cache to file."""
+        try:
+            with path.open("w", encoding="utf-8") as handle:
+                json.dump(users, handle)
+        except Exception:
+            pass
 
     def _load_cached_entries(self, path: Path) -> Optional[List[Dict[str, Any]]]:
         try:
@@ -597,6 +835,24 @@ class TogglService:
         try:
             with path.open("w", encoding="utf-8") as handle:
                 json.dump(entries, handle)
+        except Exception:
+            pass
+    
+    def _load_cached_projects(self, path: Path) -> Optional[List[Dict[str, Any]]]:
+        """Load cached projects from file."""
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except FileNotFoundError:
+            return None
+        except Exception:
+            return None
+    
+    def _store_cached_projects(self, path: Path, projects: List[Dict[str, Any]]) -> None:
+        """Store projects cache to file."""
+        try:
+            with path.open("w", encoding="utf-8") as handle:
+                json.dump(projects, handle)
         except Exception:
             pass
 

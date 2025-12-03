@@ -8,6 +8,7 @@ Configuration loader for the Timetastic + Toggl integrator.
 
 import os
 import json
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Set, List, Dict, Any
 
@@ -139,7 +140,8 @@ def load_settings() -> Settings:
         # Storage and Exports
         exports_dir=os.getenv("EXPORTS_DIR", "./exports").strip(),
         database_path=os.getenv("DATABASE_PATH", "./data/sync.db").strip(),
-        cache_dir=os.getenv("CACHE_DIR", "./cache").strip(),
+        # Cache dir: use project root if CACHE_DIR not set
+        cache_dir=os.getenv("CACHE_DIR", str(Path(__file__).parent.parent.parent / "cache")).strip(),
         
         # Slack Configuration
         slack_bot_token=os.getenv("SLACK_BOT_TOKEN", "").strip(),

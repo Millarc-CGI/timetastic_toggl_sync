@@ -153,12 +153,79 @@ class SQLiteStorage:
                 )
             """)
             
+            # Monthly statistics table - processed monthly aggregation results
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS monthly_statistics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_email TEXT,
+                    year INTEGER,
+                    month INTEGER,
+                    total_hours REAL,
+                    absence_hours REAL,
+                    working_days INTEGER,
+                    project_hours TEXT,
+                    absence_breakdown TEXT,
+                    missing_days TEXT,
+                    generated_at TEXT,
+                    created_at TEXT,
+                    UNIQUE(user_email, year, month)
+                )
+            """)
+            
+            # Daily statistics table - processed daily aggregation results
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS daily_statistics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_email TEXT,
+                    date TEXT,
+                    time_entry_hours REAL,
+                    absence_hours REAL,
+                    total_hours REAL,
+                    absence_type TEXT,
+                    absence_details TEXT,
+                    project_hours TEXT,
+                    is_weekend BOOLEAN DEFAULT 0,
+                    is_holiday BOOLEAN DEFAULT 0,
+                    monthly_statistics_id INTEGER,
+                    created_at TEXT,
+                    UNIQUE(user_email, date),
+                    FOREIGN KEY (monthly_statistics_id) REFERENCES monthly_statistics(id)
+                )
+            """)
+            
+            # Overtime data table - processed overtime calculation results
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS overtime_data (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_email TEXT,
+                    year INTEGER,
+                    month INTEGER,
+                    monthly_overtime REAL,
+                    normal_overtime REAL,
+                    weekend_overtime REAL,
+                    monthly_total_hours REAL,
+                    monthly_expected_hours REAL,
+                    daily_breakdown TEXT,
+                    weekly_breakdown TEXT,
+                    weekend_breakdown TEXT,
+                    monthly_statistics_id INTEGER,
+                    generated_at TEXT,
+                    created_at TEXT,
+                    UNIQUE(user_email, year, month),
+                    FOREIGN KEY (monthly_statistics_id) REFERENCES monthly_statistics(id)
+                )
+            """)
+            
             # Create indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_time_entries_user_email ON time_entries(user_email)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_time_entries_start_time ON time_entries(start_time)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_absences_user_email ON absences(user_email)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_absences_start_date ON absences(start_date)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_monthly_reports_user_period ON monthly_reports(user_email, year, month)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_monthly_stats_user_period ON monthly_statistics(user_email, year, month)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_stats_user_date ON daily_statistics(user_email, date)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_stats_monthly_id ON daily_statistics(monthly_statistics_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_overtime_user_period ON overtime_data(user_email, year, month)")
             
             conn.commit()
     
@@ -547,6 +614,7 @@ class SQLiteStorage:
         end_date: Optional[date] = None
     ) -> List[Absence]:
         """Get absences for user within date range, including public holidays (which are now assigned to users)."""
+        print(f"   [DEBUG Storage.get_absences_for_user] Called for user_email={user_email}, start_date={start_date}, end_date={end_date}")
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -565,19 +633,447 @@ class SQLiteStorage:
                 
                 query += " ORDER BY start_date"
                 
+                print(f"   [DEBUG Storage.get_absences_for_user] Executing query: {query} with params: {params}")
                 cursor.execute(query, params)
                 rows = cursor.fetchall()
+                
+                print(f"   [DEBUG Storage.get_absences_for_user] Found {len(rows)} rows from database")
                 
                 absences = [self._row_to_absence(row) for row in rows]
                 
                 # Count public holidays
                 public_holidays_count = sum(1 for abs in absences if (abs.notes or "").strip().startswith("Public holiday:"))
-                print(f"   [DEBUG] Storage: Found {len(absences)} absences for {user_email} (including {public_holidays_count} public holidays)")
+                regular_count = len(absences) - public_holidays_count
+                
+                print(f"   [DEBUG Storage.get_absences_for_user] Parsed {len(absences)} absences ({regular_count} regular + {public_holidays_count} public holidays)")
+                
+                if absences:
+                    print(f"   [DEBUG Storage.get_absences_for_user] Sample absences (first 5):")
+                    for abs in absences[:5]:
+                        print(f"      {abs.start_date} to {abs.end_date} | type={abs.absence_type} | status={abs.status} | user_email={abs.user_email} | notes={abs.notes[:50] if abs.notes else None}")
+                else:
+                    print(f"   [DEBUG Storage.get_absences_for_user] ⚠️ No absences found in SQLite for {user_email}")
                 
                 return absences
         except Exception as e:
             print(f"Error getting absences for {user_email}: {e}")
             return []
+    
+    # Processed statistics methods - save
+    def save_monthly_statistics(
+        self,
+        user_email: str,
+        year: int,
+        month: int,
+        monthly_data: Dict[str, Any]
+    ) -> Optional[int]:
+        """Save monthly statistics to database. Returns monthly_statistics_id."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                now = datetime.now().isoformat()
+                
+                # Prepare JSON fields
+                project_hours_json = json.dumps(monthly_data.get('project_hours', {}))
+                absence_breakdown_json = json.dumps(monthly_data.get('absence_breakdown', {}))
+                missing_days_json = json.dumps([d.isoformat() if isinstance(d, date) else d for d in monthly_data.get('missing_days', [])])
+                
+                cursor.execute("""
+                    INSERT OR REPLACE INTO monthly_statistics
+                    (user_email, year, month, total_hours, absence_hours, working_days,
+                     project_hours, absence_breakdown, missing_days, generated_at, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    user_email.lower(),
+                    year,
+                    month,
+                    monthly_data.get('total_hours', 0.0),
+                    monthly_data.get('absence_hours', 0.0),
+                    monthly_data.get('working_days', 0),
+                    project_hours_json,
+                    absence_breakdown_json,
+                    missing_days_json,
+                    now,
+                    now
+                ))
+                
+                # Get the ID of the inserted/updated row
+                cursor.execute("""
+                    SELECT id FROM monthly_statistics
+                    WHERE user_email = ? AND year = ? AND month = ?
+                """, (user_email.lower(), year, month))
+                row = cursor.fetchone()
+                monthly_statistics_id = row[0] if row else None
+                
+                conn.commit()
+                return monthly_statistics_id
+        except Exception as e:
+            print(f"Error saving monthly statistics for {user_email} ({year}-{month:02d}): {e}")
+            return None
+    
+    def save_daily_statistics(
+        self,
+        user_email: str,
+        year: int,
+        month: int,
+        daily_data: List[Dict[str, Any]],
+        monthly_statistics_id: Optional[int]
+    ) -> bool:
+        """Save daily statistics to database."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                now = datetime.now().isoformat()
+                
+                # Delete existing daily statistics for this user/month
+                cursor.execute("""
+                    DELETE FROM daily_statistics
+                    WHERE user_email = ? AND date >= ? AND date <= ?
+                """, (
+                    user_email.lower(),
+                    date(year, month, 1).isoformat(),
+                    (date(year, month + 1, 1) - timedelta(days=1) if month < 12 else date(year + 1, 1, 1) - timedelta(days=1)).isoformat()
+                ))
+                
+                # Batch insert all days
+                for day in daily_data:
+                    date_obj = day.get('date')
+                    if isinstance(date_obj, str):
+                        date_str = date_obj
+                    elif isinstance(date_obj, date):
+                        date_str = date_obj.isoformat()
+                    else:
+                        continue
+                    
+                    # Map is_public_holiday to is_holiday (where public holidays are also holidays)
+                    is_holiday = day.get('is_public_holiday', False) or day.get('is_holiday', False)
+                    
+                    absence_details_json = json.dumps(day.get('absence_details', []))
+                    project_hours_json = json.dumps(day.get('project_hours', {}))
+                    
+                    cursor.execute("""
+                        INSERT INTO daily_statistics
+                        (user_email, date, time_entry_hours, absence_hours, total_hours,
+                         absence_type, absence_details, project_hours, is_weekend, is_holiday,
+                         monthly_statistics_id, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        user_email.lower(),
+                        date_str,
+                        day.get('time_entry_hours', 0.0),
+                        day.get('absence_hours', 0.0),
+                        day.get('total_hours', 0.0),
+                        day.get('absence_type'),
+                        absence_details_json,
+                        project_hours_json,
+                        1 if day.get('is_weekend', False) else 0,
+                        1 if is_holiday else 0,
+                        monthly_statistics_id,
+                        now
+                    ))
+                
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"Error saving daily statistics for {user_email} ({year}-{month:02d}): {e}")
+            return False
+    
+    def save_overtime_data(
+        self,
+        user_email: str,
+        year: int,
+        month: int,
+        overtime_data: Dict[str, Any],
+        monthly_statistics_id: Optional[int]
+    ) -> bool:
+        """Save overtime data to database."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                now = datetime.now().isoformat()
+                
+                # Map daily_overtime to normal_overtime (weekday)
+                normal_overtime = overtime_data.get('daily_overtime', 0.0)
+                weekend_overtime = overtime_data.get('weekend_overtime', 0.0)
+                
+                # Prepare JSON fields
+                daily_breakdown_json = json.dumps(overtime_data.get('daily_breakdown', []), default=str)
+                weekly_breakdown_json = json.dumps(
+                    {str(k): v for k, v in overtime_data.get('weekly_breakdown', {}).items()},
+                    default=str
+                )
+                weekend_breakdown_json = json.dumps(
+                    {str(k): v for k, v in overtime_data.get('weekend_breakdown', {}).items()},
+                    default=str
+                )
+                
+                cursor.execute("""
+                    INSERT OR REPLACE INTO overtime_data
+                    (user_email, year, month, monthly_overtime, normal_overtime, weekend_overtime,
+                     monthly_total_hours, monthly_expected_hours, daily_breakdown, weekly_breakdown,
+                     weekend_breakdown, monthly_statistics_id, generated_at, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    user_email.lower(),
+                    year,
+                    month,
+                    overtime_data.get('monthly_overtime', 0.0),
+                    normal_overtime,
+                    weekend_overtime,
+                    overtime_data.get('monthly_total_hours', 0.0),
+                    overtime_data.get('monthly_expected_hours', 0.0),
+                    daily_breakdown_json,
+                    weekly_breakdown_json,
+                    weekend_breakdown_json,
+                    monthly_statistics_id,
+                    now,
+                    now
+                ))
+                
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"Error saving overtime data for {user_email} ({year}-{month:02d}): {e}")
+            return False
+    
+    def save_user_monthly_processed_data(
+        self,
+        user_email: str,
+        year: int,
+        month: int,
+        monthly_data: Dict[str, Any],
+        overtime_data: Dict[str, Any]
+    ) -> bool:
+        """
+        Save all processed data for a user/month: monthly statistics, daily statistics, and overtime data.
+        This is a new unified method that saves data from data_aggregator and overtime_calculator.
+        """
+        try:
+            # First save monthly statistics to get the ID
+            monthly_statistics_id = self.save_monthly_statistics(user_email, year, month, monthly_data)
+            
+            if not monthly_statistics_id:
+                print(f"   [DEBUG SQLite] Failed to save monthly statistics for {user_email} ({year}-{month:02d})")
+                return False
+            
+            # Save daily statistics
+            daily_data = monthly_data.get('daily_data', [])
+            if daily_data:
+                daily_saved = self.save_daily_statistics(user_email, year, month, daily_data, monthly_statistics_id)
+                if not daily_saved:
+                    print(f"   [DEBUG SQLite] Failed to save daily statistics for {user_email} ({year}-{month:02d})")
+            
+            # Save overtime data
+            overtime_saved = self.save_overtime_data(user_email, year, month, overtime_data, monthly_statistics_id)
+            if not overtime_saved:
+                print(f"   [DEBUG SQLite] Failed to save overtime data for {user_email} ({year}-{month:02d})")
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error saving processed data for {user_email} ({year}-{month:02d}): {e}")
+            return False
+    
+    # Processed statistics methods - read
+    def get_monthly_statistics(
+        self,
+        user_email: str,
+        year: int,
+        month: int
+    ) -> Optional[Dict[str, Any]]:
+        """Get monthly statistics from database."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT total_hours, absence_hours, working_days, project_hours,
+                           absence_breakdown, missing_days, generated_at
+                    FROM monthly_statistics
+                    WHERE user_email = ? AND year = ? AND month = ?
+                """, (user_email.lower(), year, month))
+                
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                
+                # Deserialize JSON fields
+                project_hours = {}
+                absence_breakdown = {}
+                missing_days = []
+                
+                if row[3]:  # project_hours
+                    try:
+                        project_hours = json.loads(row[3])
+                    except json.JSONDecodeError:
+                        pass
+                
+                if row[4]:  # absence_breakdown
+                    try:
+                        absence_breakdown = json.loads(row[4])
+                    except json.JSONDecodeError:
+                        pass
+                
+                if row[5]:  # missing_days
+                    try:
+                        missing_days_raw = json.loads(row[5])
+                        missing_days = [datetime.fromisoformat(d).date() if isinstance(d, str) else d for d in missing_days_raw]
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                
+                return {
+                    'total_hours': row[0],
+                    'absence_hours': row[1],
+                    'working_days': row[2],
+                    'project_hours': project_hours,
+                    'absence_breakdown': absence_breakdown,
+                    'missing_days': missing_days,
+                    'generated_at': row[6]
+                }
+        except Exception as e:
+            print(f"Error getting monthly statistics for {user_email} ({year}-{month:02d}): {e}")
+            return None
+    
+    def get_daily_statistics(
+        self,
+        user_email: str,
+        year: int,
+        month: int
+    ) -> List[Dict[str, Any]]:
+        """Get daily statistics from database."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                start_date = date(year, month, 1).isoformat()
+                end_date = (date(year, month + 1, 1) - timedelta(days=1) if month < 12 else date(year + 1, 1, 1) - timedelta(days=1)).isoformat()
+                
+                cursor.execute("""
+                    SELECT date, time_entry_hours, absence_hours, total_hours,
+                           absence_type, absence_details, project_hours, is_weekend, is_holiday
+                    FROM daily_statistics
+                    WHERE user_email = ? AND date >= ? AND date <= ?
+                    ORDER BY date
+                """, (user_email.lower(), start_date, end_date))
+                
+                rows = cursor.fetchall()
+                daily_data = []
+                
+                for row in rows:
+                    # Deserialize JSON fields
+                    absence_details = []
+                    project_hours = {}
+                    
+                    if row[5]:  # absence_details
+                        try:
+                            absence_details = json.loads(row[5])
+                        except json.JSONDecodeError:
+                            pass
+                    
+                    if row[6]:  # project_hours
+                        try:
+                            project_hours = json.loads(row[6])
+                        except json.JSONDecodeError:
+                            pass
+                    
+                    # Map is_holiday back to is_public_holiday for compatibility
+                    is_public_holiday = bool(row[8])  # is_holiday
+                    
+                    daily_data.append({
+                        'date': datetime.fromisoformat(row[0]).date() if isinstance(row[0], str) else row[0],
+                        'time_entry_hours': row[1],
+                        'absence_hours': row[2],
+                        'total_hours': row[3],
+                        'absence_type': row[4],
+                        'absence_details': absence_details,
+                        'project_hours': project_hours,
+                        'is_weekend': bool(row[7]),
+                        'is_public_holiday': is_public_holiday,
+                        'is_holiday': is_public_holiday  # Also include is_holiday for consistency
+                    })
+                
+                return daily_data
+        except Exception as e:
+            print(f"Error getting daily statistics for {user_email} ({year}-{month:02d}): {e}")
+            return []
+    
+    def get_overtime_data(
+        self,
+        user_email: str,
+        year: int,
+        month: int
+    ) -> Optional[Dict[str, Any]]:
+        """Get overtime data from database."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT monthly_overtime, normal_overtime, weekend_overtime,
+                           monthly_total_hours, monthly_expected_hours,
+                           daily_breakdown, weekly_breakdown, weekend_breakdown, generated_at
+                    FROM overtime_data
+                    WHERE user_email = ? AND year = ? AND month = ?
+                """, (user_email.lower(), year, month))
+                
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                
+                # Deserialize JSON fields
+                daily_breakdown = []
+                weekly_breakdown = {}
+                weekend_breakdown = {}
+                
+                if row[5]:  # daily_breakdown
+                    try:
+                        daily_breakdown = json.loads(row[5])
+                        # Convert date strings back to date objects
+                        for item in daily_breakdown:
+                            if 'date' in item and isinstance(item['date'], str):
+                                item['date'] = datetime.fromisoformat(item['date']).date()
+                    except json.JSONDecodeError:
+                        pass
+                
+                if row[6]:  # weekly_breakdown
+                    try:
+                        weekly_breakdown_raw = json.loads(row[6])
+                        # Convert date string keys back to date objects
+                        weekly_breakdown = {
+                            datetime.fromisoformat(k).date() if isinstance(k, str) else k: v
+                            for k, v in weekly_breakdown_raw.items()
+                        }
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                
+                if row[7]:  # weekend_breakdown
+                    try:
+                        weekend_breakdown_raw = json.loads(row[7])
+                        # Convert date string keys back to date objects
+                        weekend_breakdown = {
+                            datetime.fromisoformat(k).date() if isinstance(k, str) else k: v
+                            for k, v in weekend_breakdown_raw.items()
+                        }
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                
+                # Map normal_overtime back to daily_overtime for compatibility
+                daily_overtime = row[1]  # normal_overtime
+                
+                return {
+                    'monthly_overtime': row[0],
+                    'daily_overtime': daily_overtime,  # mapped from normal_overtime
+                    'weekend_overtime': row[2],
+                    'monthly_total_hours': row[3],
+                    'monthly_expected_hours': row[4],
+                    'daily_breakdown': daily_breakdown,
+                    'weekly_breakdown': weekly_breakdown,
+                    'weekend_breakdown': weekend_breakdown,
+                    'generated_at': row[8]
+                }
+        except Exception as e:
+            print(f"Error getting overtime data for {user_email} ({year}-{month:02d}): {e}")
+            return None
     
     def _row_to_absence(self, row: Tuple) -> Absence:
         """Convert database row to Absence object."""
