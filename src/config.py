@@ -80,6 +80,7 @@ class Settings:
     admin_emails: Set[str]
     producer_emails: Set[str]
     run_token: str
+    email_aliases: Dict[str, str]  # Maps alternative emails to canonical email
     
     # Notification Settings
     missing_entries_check_days: int
@@ -140,8 +141,8 @@ def load_settings() -> Settings:
         # Storage and Exports
         exports_dir=os.getenv("EXPORTS_DIR", "./exports").strip(),
         database_path=os.getenv("DATABASE_PATH", "./data/sync.db").strip(),
-        # Cache dir: use project root if CACHE_DIR not set
-        cache_dir=os.getenv("CACHE_DIR", str(Path(__file__).parent.parent.parent / "cache")).strip(),
+        # Cache directory for API responses (Toggl, Timetastic)
+        cache_dir=os.getenv("CACHE_DIR", "./cache").strip(),
         
         # Slack Configuration
         slack_bot_token=os.getenv("SLACK_BOT_TOKEN", "").strip(),
@@ -155,6 +156,8 @@ def load_settings() -> Settings:
         admin_emails=_split_csv_set(os.getenv("ADMIN_EMAILS", "")),
         producer_emails=_split_csv_set(os.getenv("PRODUCER_EMAILS", "")),
         run_token=os.getenv("RUN_TOKEN", "").strip(),
+        # Email aliases: maps alternative emails to canonical email (normalized to lowercase)
+        email_aliases={k.lower().strip(): v.lower().strip() for k, v in (_parse_json(os.getenv("EMAIL_ALIASES", "{}"), {}) or {}).items()},
         
         # Notification Settings
         missing_entries_check_days=int(os.getenv("MISSING_ENTRIES_CHECK_DAYS", "7")),

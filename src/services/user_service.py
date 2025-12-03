@@ -21,6 +21,29 @@ class UserService:
         self.timetastic_service = TimetasticService(settings)
         self.slack_service = SlackService(settings)
     
+    def _normalize_email(self, email: str) -> str:
+        """Normalize email using aliases mapping."""
+        email_lower = email.lower().strip()
+        if not email_lower:
+            return email_lower
+        # Check if this email has an alias mapping
+        canonical = self.settings.email_aliases.get(email_lower)
+        return canonical if canonical else email_lower
+    
+    def _normalize_name(self, name: str) -> str:
+        """Normalize name for comparison (lowercase, remove extra spaces)."""
+        if not name:
+            return ""
+        return " ".join(name.lower().strip().split())
+    
+    def _names_match(self, name1: str, name2: str) -> bool:
+        """Check if two names match (normalized comparison)."""
+        norm1 = self._normalize_name(name1)
+        norm2 = self._normalize_name(name2)
+        if not norm1 or not norm2:
+            return False
+        return norm1 == norm2
+    
     def sync_users_from_services(self) -> List[User]:
         """Synchronize users from all services and create mappings."""
         print("🔄 Syncing users from all services...")
@@ -99,14 +122,16 @@ class UserService:
                 continue
             if not user.get('is_active', False):
                 continue
-            if active_timetastic_emails and email not in active_timetastic_emails:
+            # Normalize email using aliases
+            normalized_email = self._normalize_email(email)
+            if active_timetastic_emails and normalized_email not in active_timetastic_emails:
                 continue
             
-            if email not in user_mappings:
-                user_mappings[email] = {}
+            if normalized_email not in user_mappings:
+                user_mappings[normalized_email] = {}
             
-            user_mappings[email]['toggl_id'] = user.get('id')
-            user_mappings[email]['full_name'] = user.get('fullname', '')
+            user_mappings[normalized_email]['toggl_id'] = user.get('id')
+            user_mappings[normalized_email]['full_name'] = user.get('fullname', '')
 
     def _process_timetastic_users(self, timetastic_users: List[Dict[str, Any]], user_mappings: Dict[str, Dict[str, Any]]):
         """Process Timetastic users and add to mappings."""
@@ -118,18 +143,20 @@ class UserService:
                 continue
             
             email = email.lower()
-            if email not in user_mappings:
-                user_mappings[email] = {}
+            # Normalize email using aliases
+            normalized_email = self._normalize_email(email)
+            if normalized_email not in user_mappings:
+                user_mappings[normalized_email] = {}
             
-            user_mappings[email]['timetastic_id'] = user.get('id') or user.get('Id')
+            user_mappings[normalized_email]['timetastic_id'] = user.get('id') or user.get('Id')
             
             # Update full name if not set or if Timetastic has better info
             first_name = user.get('firstName') or user.get('FirstName', '')
             last_name = user.get('lastName') or user.get('LastName', '')
             full_name = f"{first_name} {last_name}".strip()
             
-            if full_name and (not user_mappings[email].get('full_name') or len(full_name) > len(user_mappings[email].get('full_name', ''))):
-                user_mappings[email]['full_name'] = full_name
+            if full_name and (not user_mappings[normalized_email].get('full_name') or len(full_name) > len(user_mappings[normalized_email].get('full_name', ''))):
+                user_mappings[normalized_email]['full_name'] = full_name
             
             # Add department info
             department = user.get('department', {})
@@ -142,7 +169,7 @@ class UserService:
             if not department_name and isinstance(department, str):
                 department_name = department
             if department_name:
-                user_mappings[email]['department'] = department_name
+                user_mappings[normalized_email]['department'] = department_name
 
     def _process_slack_users(
         self,
@@ -150,29 +177,75 @@ class UserService:
         user_mappings: Dict[str, Dict[str, Any]],
         active_timetastic_emails: Set[str],
     ):
-        """Process Slack users and add to mappings."""
+        """Process Slack users and add to mappings. Try email first, then name matching."""
         for user in slack_users:
             profile = user.get('profile', {})
             email = profile.get('email', '').lower()
             if not email or user.get('deleted', False) or user.get('is_bot', False):
                 continue
-            if active_timetastic_emails and email not in active_timetastic_emails:
-                continue
             
-            if email not in user_mappings:
-                user_mappings[email] = {}
-            
-            user_mappings[email]['slack_id'] = user.get('id')
-            
-            # Update full name if not set or if Slack has better info
+            slack_id = user.get('id')
             real_name = profile.get('real_name') or profile.get('real_name_normalized', '')
+            first_name = profile.get('first_name', '')
+            last_name = profile.get('last_name', '')
             display_name = profile.get('display_name') or profile.get('display_name_normalized', '')
             full_name = real_name or display_name
             
-            if full_name and (not user_mappings[email].get('full_name') or len(full_name) > len(user_mappings[email].get('full_name', ''))):
-                user_mappings[email]['full_name'] = full_name
-            elif not user_mappings[email].get('full_name') and display_name:
-                user_mappings[email]['full_name'] = display_name
+            # Normalize email using aliases
+            normalized_email = self._normalize_email(email)
+            
+            # Try to match by email first
+            matched = False
+            if normalized_email in user_mappings:
+                # Email match found
+                user_mappings[normalized_email]['slack_id'] = slack_id
+                matched = True
+                
+                # Update full name if Slack has better info
+                if full_name and (not user_mappings[normalized_email].get('full_name') or len(full_name) > len(user_mappings[normalized_email].get('full_name', ''))):
+                    user_mappings[normalized_email]['full_name'] = full_name
+            
+            # If no email match, try to match by name (but only if user is in active Timetastic users)
+            if not matched:
+                # Check if we should try name matching (only for active Timetastic users)
+                should_try_name_match = True
+                if active_timetastic_emails:
+                    # Only try name matching if we have name info from Slack
+                    should_try_name_match = bool(real_name or (first_name and last_name))
+                
+                if should_try_name_match:
+                    for mapping_email, mapping_data in user_mappings.items():
+                        # Skip if this mapping already has slack_id
+                        if mapping_data.get('slack_id'):
+                            continue
+                        
+                        existing_full_name = mapping_data.get('full_name', '')
+                        
+                        # Try matching by full name
+                        if real_name and existing_full_name:
+                            if self._names_match(real_name, existing_full_name):
+                                mapping_data['slack_id'] = slack_id
+                                matched = True
+                                # Update name if Slack has more complete info
+                                if len(real_name) > len(existing_full_name):
+                                    mapping_data['full_name'] = real_name
+                                break
+                        
+                        # Try matching by first + last name (if we have both)
+                        if first_name and last_name and existing_full_name:
+                            # Try to extract first/last from existing_full_name
+                            existing_parts = existing_full_name.split()
+                            if len(existing_parts) >= 2:
+                                existing_first = existing_parts[0]
+                                existing_last = existing_parts[-1]
+                                if (self._names_match(first_name, existing_first) and 
+                                    self._names_match(last_name, existing_last)):
+                                    mapping_data['slack_id'] = slack_id
+                                    matched = True
+                                    # Update name if Slack has more complete info
+                                    if len(real_name) > len(existing_full_name):
+                                        mapping_data['full_name'] = real_name
+                                    break
 
     def _collect_active_timetastic_emails(self, timetastic_users: List[Dict[str, Any]]) -> Set[str]:
         emails: Set[str] = set()
@@ -181,7 +254,9 @@ class UserService:
                 continue
             email = (user.get('email') or user.get('Email', '')).strip().lower()
             if email:
-                emails.add(email)
+                # Normalize email using aliases
+                normalized_email = self._normalize_email(email)
+                emails.add(normalized_email)
         return emails
 
     def _is_timetastic_user_active(self, user: Dict[str, Any]) -> bool:
@@ -196,9 +271,10 @@ class UserService:
             # This would typically come from storage, but for now we'll sync fresh
             users = self.sync_users_from_services()
         
-        email_lower = email.lower()
+        # Normalize email using aliases
+        normalized_email = self._normalize_email(email)
         for user in users:
-            if user.email.lower() == email_lower:
+            if user.email.lower() == normalized_email:
                 return user
         return None
     

@@ -443,26 +443,7 @@ class TogglService:
         else:
             raw_entries = normalized_entries
 
-        # Filter by user_id locally if requested (Reports API returns all users)
-        if user_ids:
-            target_ids = {int(u) for u in user_ids}
-            filtered: List[Dict[str, Any]] = []
-            for entry_data in raw_entries:
-                if not isinstance(entry_data, dict):
-                    continue
-                uid = entry_data.get("user_id")
-                if uid is None and isinstance(entry_data.get("user"), dict):
-                    uid = entry_data["user"].get("id")
-                try:
-                    uid_int = int(uid) if uid is not None else None
-                except (TypeError, ValueError):
-                    uid_int = None
-                if uid_int is None:
-                    continue
-                if uid_int in target_ids:
-                    filtered.append(entry_data)
-            raw_entries = filtered
-
+        # Normalize ALL entries first (before filtering) so cache contains all users' data
         if normalized_entries is None:
             normalized_entries = []
 
@@ -549,6 +530,14 @@ class TogglService:
                         data_hash=data_hash,
                         clear_dirty=True
                     )
+
+        # Filter by user_id AFTER cache is saved (so cache contains all users' entries)
+        if user_ids:
+            target_ids = {int(u) for u in user_ids}
+            normalized_entries = [
+                entry for entry in normalized_entries
+                if entry.get('user_id') in target_ids
+            ]
 
         if workspace:
             # Projects should already be pre-loaded at the start of get_time_entries

@@ -83,6 +83,17 @@ class FileStorage:
         else:
             file_path = self._get_role_file_path(role, report.year, report.month, "csv")
         
+        # Remove existing file if it exists to allow overwriting (handles permission issues)
+        if file_path.exists():
+            try:
+                # Try to make file writable and remove it
+                os.chmod(file_path, 0o666)  # Make writable
+                file_path.unlink()  # Remove file
+            except (PermissionError, OSError) as e:
+                # If file is open in another program, try to continue anyway
+                # The 'w' mode should still work if file becomes available
+                pass
+        
         with open(file_path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             
@@ -106,6 +117,18 @@ class FileStorage:
     def export_user_report_csv(self, report: UserReport) -> Path:
         """Export user report (weekly or monthly) to CSV."""
         file_path = self._get_user_file_path(report.user_email, report.year, report.month, "csv")
+        
+        # Remove existing file if it exists to allow overwriting (handles permission issues)
+        if file_path.exists():
+            try:
+                # Try to make file writable and remove it
+                os.chmod(file_path, 0o666)  # Make writable
+                file_path.unlink()  # Remove file
+            except (PermissionError, OSError) as e:
+                # If file is open in another program, try to continue anyway
+                # The 'w' mode should still work if file becomes available
+                pass
+        
         with open(file_path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow([f"{report.report_type.title()} User Report"])
@@ -135,6 +158,17 @@ class FileStorage:
     def export_admin_report_csv(self, reports: List[UserReport], year: int, month: int) -> Path:
         """Export admin report (summary of all users) to CSV."""
         file_path = self._get_role_file_path("admin", year, month, "csv")
+        
+        # Remove existing file if it exists to allow overwriting (handles permission issues)
+        if file_path.exists():
+            try:
+                # Try to make file writable and remove it
+                os.chmod(file_path, 0o666)  # Make writable
+                file_path.unlink()  # Remove file
+            except (PermissionError, OSError) as e:
+                # If file is open in another program, try to continue anyway
+                # The 'w' mode should still work if file becomes available
+                pass
         
         with open(file_path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)

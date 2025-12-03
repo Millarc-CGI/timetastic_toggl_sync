@@ -224,15 +224,6 @@ class ReportGenerator:
         )
         lines.append(f"   - daily overtime total: {monthly_overtime:.2f}h")
         lines.append(f"   - weekend overtime: {overtime_data.get('weekend_overtime', 0.0):.2f}h")
-        weekly_breakdown = overtime_data.get("weekly_breakdown", {}) or {}
-        if weekly_breakdown:
-            lines.append("   - weekly breakdown:")
-            for week_start, info in sorted(weekly_breakdown.items()):
-                lines.append(
-                    f"       {week_start}: worked={info.get('total_hours', 0.0):.2f}h "
-                    f"expected={info.get('expected_hours', 0.0):.2f}h "
-                    f"overtime={info.get('overtime', 0.0):.2f}h"
-                )
         return "\n".join(lines)
     
     def format_overtime_table(self, daily_data: List[Dict[str, Any]], overtime_data: Dict[str, Any]) -> str:

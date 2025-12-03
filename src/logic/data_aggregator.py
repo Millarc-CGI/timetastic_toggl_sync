@@ -282,6 +282,139 @@ class DataAggregator:
             'project_names_by_id': project_names_by_id
         }
     
+    def aggregate_weekly(
+        self,
+        user_email: str,
+        week_start: date,
+        week_end: date,
+        time_entries: List[TimeEntry],
+        absences: List[Absence]
+    ) -> Dict[str, Any]:
+        """Aggregate data for a single user for a week (can span across months)."""
+        
+        # Filter data for the week range
+        week_entries = [
+            entry for entry in time_entries 
+            if week_start <= entry.date <= week_end
+        ]
+        
+        week_absences = [
+            absence for absence in absences
+            if absence.start_date <= week_end and absence.end_date >= week_start
+        ]
+        
+        # Daily aggregation
+        daily_data = []
+        total_hours = 0
+        total_billable_hours = 0
+        total_absence_hours = 0
+        
+        project_hours = defaultdict(float)
+        absence_hours_breakdown = defaultdict(float)
+        missing_days = []
+        absence_review_days: List[Dict[str, Any]] = []
+        project_task_hours = defaultdict(lambda: defaultdict(float))
+        project_hours_by_id = defaultdict(float)
+        project_task_hours_by_id = defaultdict(lambda: defaultdict(float))
+        project_activity_dates: Dict[Any, Dict[str, Optional[date]]] = {}
+        project_names_by_id: Dict[Any, str] = {}
+        today = date.today()
+        
+        current_date = week_start
+        while current_date <= week_end:
+            day_data = self.aggregate_daily(user_email, current_date, week_entries, week_absences)
+            daily_data.append(day_data)
+            
+            total_hours += day_data['total_hours']
+            total_billable_hours += day_data['billable_hours']
+            total_absence_hours += day_data['absence_hours']
+            
+            # Aggregate project hours
+            for project, hours in day_data['project_hours'].items():
+                project_hours[project] += hours
+
+            for project_id, hours in day_data.get('project_hours_by_id', {}).items():
+                project_hours_by_id[project_id] += hours
+                if hours > 0:
+                    info = project_activity_dates.setdefault(project_id, {'start': None, 'end': None})
+                    if info['start'] is None or day_data['date'] < info['start']:
+                        info['start'] = day_data['date']
+                    if info['end'] is None or day_data['date'] > info['end']:
+                        info['end'] = day_data['date']
+            
+            # Track absence types by hours
+            for absence_detail in day_data.get('absence_details', []):
+                absence_hours_breakdown[absence_detail['absence_type']] += absence_detail['hours']
+            
+            # Track missing days (no entries and no absence) but skip today/future, weekends, and public holidays
+            if (
+                current_date < today
+                and not day_data['has_entries']
+                and not day_data['has_absence']
+                and not day_data['is_weekend']
+                and not day_data['is_public_holiday']
+            ):
+                missing_days.append(current_date)
+
+            if day_data.get('needs_absence_review'):
+                absence_review_days.append({
+                    'date': current_date,
+                    'notes': day_data.get('absence_review_notes', [])
+                })
+
+            for project, tasks in day_data.get('task_hours', {}).items():
+                for task, hours in tasks.items():
+                    project_task_hours[project][task] += hours
+
+            for project_id, tasks in day_data.get('project_task_hours_by_id', {}).items():
+                for task, hours in tasks.items():
+                    project_task_hours_by_id[project_id][task] += hours
+
+            for project_id, name in (day_data.get('project_names_by_id') or {}).items():
+                project_names_by_id[project_id] = name
+
+            current_date += timedelta(days=1)
+        
+        # Calculate working days in week
+        working_days = len([d for d in daily_data if d['total_hours'] > 0])
+
+        absence_breakdown = {
+            absence_type: hours / self.default_daily_hours if self.default_daily_hours else hours
+            for absence_type, hours in absence_hours_breakdown.items()
+        }
+        
+        return {
+            'user_email': user_email,
+            'period_start': week_start,
+            'period_end': week_end,
+            'total_hours': total_hours,
+            'billable_hours': total_billable_hours,
+            'absence_hours': total_absence_hours,
+            'working_days': working_days,
+            'project_hours': dict(project_hours),
+            'absence_breakdown': absence_breakdown,
+            'absence_hours_breakdown': dict(absence_hours_breakdown),
+            'missing_days': missing_days,
+            'absence_review_days': absence_review_days,
+            'daily_data': daily_data,
+            'time_entries_count': len(week_entries),
+            'absences_count': len(week_absences),
+            'project_task_hours': {
+                project: dict(tasks) for project, tasks in project_task_hours.items()
+            },
+            'project_hours_by_id': dict(project_hours_by_id),
+            'project_task_hours_by_id': {
+                project_id: dict(tasks) for project_id, tasks in project_task_hours_by_id.items()
+            },
+            'project_activity_dates': {
+                project_id: {
+                    'start': info.get('start'),
+                    'end': info.get('end')
+                } for project_id, info in project_activity_dates.items()
+            },
+            'project_names_by_id': project_names_by_id
+        }
+    
     def aggregate_all_users(
         self,
         users: List[User],
