@@ -70,6 +70,9 @@ class UserReport:
     # Entries without project
     no_project_entries_count: int = 0
     
+    # Daily overtime breakdown
+    daily_breakdown: List[Dict[str, Any]] = None
+    
     # Metadata
     generated_at: Optional[datetime] = None
     
@@ -81,6 +84,8 @@ class UserReport:
             self.project_tasks = {}
         if self.missing_days is None:
             self.missing_days = []
+        if self.daily_breakdown is None:
+            self.daily_breakdown = []
         if self.generated_at is None:
             self.generated_at = datetime.now()
         if not self.period_label:
@@ -121,5 +126,6 @@ class UserReport:
             'project_tasks': self.project_tasks,
             'missing_days': [d.isoformat() for d in self.missing_days],
             'no_project_entries_count': self.no_project_entries_count,
+            'daily_breakdown': self.daily_breakdown,
             'generated_at': self.generated_at.isoformat() if self.generated_at else None,
         }

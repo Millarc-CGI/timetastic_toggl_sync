@@ -37,6 +37,7 @@ class ReportGenerator:
         }
         missing_days = user_data.get('missing_days', [])
         no_project_entries_count = user_data.get('no_project_entries_count', 0)
+        daily_breakdown = overtime_data.get('daily_breakdown', [])
         
         if not period_label and year and month:
             period_label = f"{year}-{month:02d}"
@@ -56,6 +57,7 @@ class ReportGenerator:
             project_tasks=project_tasks,
             missing_days=missing_days,
             no_project_entries_count=no_project_entries_count,
+            daily_breakdown=daily_breakdown,
             generated_at=datetime.now()
         )
 

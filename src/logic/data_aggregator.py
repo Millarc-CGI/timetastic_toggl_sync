@@ -95,16 +95,30 @@ class DataAggregator:
         project_hours_by_id = defaultdict(float)
         project_task_hours_by_id = defaultdict(lambda: defaultdict(float))
         project_names_by_id: Dict[int, str] = {}
+        # Szczegółowe informacje o projektach i taskach z ID
+        project_task_details = defaultdict(lambda: defaultdict(lambda: {'task_id': None, 'hours': 0.0}))
+        
         for entry in day_entries:
             project_name = entry.project_name or "No Project"
             project_id = entry.project_id
             task_name = entry.task_name or entry.description or "No Task"
+            task_id = entry.task_id
+            
             project_hours[project_name] += entry.duration_hours
             project_task_hours[project_name][task_name] += entry.duration_hours
+            
             if project_id is not None:
                 project_hours_by_id[project_id] += entry.duration_hours
                 project_task_hours_by_id[project_id][task_name] += entry.duration_hours
                 project_names_by_id[project_id] = project_name
+                
+                # Zbierz szczegóły z task_id
+                if task_name not in project_task_details[project_id]:
+                    project_task_details[project_id][task_name] = {
+                        'task_id': task_id,
+                        'hours': 0.0
+                    }
+                project_task_details[project_id][task_name]['hours'] += entry.duration_hours
 
         has_public_holiday = any(
             entry.get('is_public_holiday') for entry in absence_entries
@@ -138,6 +152,11 @@ class DataAggregator:
                 project_id: dict(tasks) for project_id, tasks in project_task_hours_by_id.items()
             },
             'project_names_by_id': project_names_by_id,
+            'project_task_details': {
+                project_id: {
+                    task_name: details for task_name, details in tasks.items()
+                } for project_id, tasks in project_task_details.items()
+            },
             'worked_absence_overridden': treated_remote_absence
         }
     

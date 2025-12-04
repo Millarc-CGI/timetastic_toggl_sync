@@ -85,6 +85,21 @@ class OvertimeCalculator:
             is_actual_weekend = day_data.get('is_actual_weekend', is_effective_weekend)
             is_public_holiday = day_data.get('is_public_holiday', False)
 
+            # Przygotuj szczegóły projektów i tasków
+            project_task_details = day_data.get('project_task_details', {})
+            project_names_by_id = day_data.get('project_names_by_id', {})
+            projects_info = []
+            for project_id, tasks in project_task_details.items():
+                project_name = project_names_by_id.get(project_id, f"Project {project_id}")
+                for task_name, task_info in tasks.items():
+                    projects_info.append({
+                        'project_id': project_id,
+                        'project_name': project_name,
+                        'task_id': task_info.get('task_id'),
+                        'task_name': task_name,
+                        'hours': task_info.get('hours', 0.0)
+                    })
+            
             if is_effective_weekend:
                 weekend_hours = day_data.get('time_entry_hours', 0.0)
                 weekend_overtime += weekend_hours
@@ -92,7 +107,10 @@ class OvertimeCalculator:
                 daily_breakdown.append({
                     'date': date_obj,
                     'type': 'weekend',
-                    'hours': weekend_hours
+                    'hours': weekend_hours,
+                    'toggl_hours': day_data.get('time_entry_hours', 0.0),
+                    'total_hours': total_hours,
+                    'projects': projects_info
                 })
                 month_expected_increment = 0.0
             else:
@@ -101,7 +119,11 @@ class OvertimeCalculator:
                 daily_breakdown.append({
                     'date': date_obj,
                     'type': 'weekday',
-                    'hours': overtime
+                    'hours': overtime,
+                    'toggl_hours': day_data.get('time_entry_hours', 0.0),
+                    'total_hours': total_hours,
+                    'expected_hours': self.default_daily_hours,
+                    'projects': projects_info
                 })
                 month_expected_increment = self.default_daily_hours
 

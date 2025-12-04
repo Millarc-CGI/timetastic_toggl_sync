@@ -153,6 +153,78 @@ class FileStorage:
                 for missing_day in report.missing_days:
                     writer.writerow([missing_day.isoformat()])
                 writer.writerow([])
+            
+            # Daily Overtime Breakdown
+            if report.daily_breakdown:
+                writer.writerow(['Daily Overtime Breakdown'])
+                writer.writerow([
+                    'Date', 'Type', 'Toggl Hours', 'Total Hours', 'Expected Hours', 'OT Hours',
+                    'Project', 'Project ID', 'Project Hours', 'Task', 'Task ID', 'Task Hours'
+                ])
+                
+                for day_entry in report.daily_breakdown:
+                    date_str = day_entry.get('date')
+                    if isinstance(date_str, date):
+                        date_str = date_str.isoformat()
+                    elif isinstance(date_str, str):
+                        # Try to parse and format if needed
+                        try:
+                            date_obj = datetime.fromisoformat(date_str.replace('Z', '+00:00')).date()
+                            date_str = date_obj.isoformat()
+                        except:
+                            pass
+                    
+                    entry_type = day_entry.get('type', '')
+                    toggl_hours = day_entry.get('toggl_hours', 0.0)
+                    total_hours = day_entry.get('total_hours', 0.0)
+                    expected_hours = day_entry.get('expected_hours', 0.0)
+                    ot_hours = day_entry.get('hours', 0.0)
+                    
+                    projects = day_entry.get('projects', [])
+                    
+                    if projects:
+                        # Calculate project hours (sum of all tasks for each project)
+                        project_hours_map = {}
+                        for project in projects:
+                            project_id = project.get('project_id')
+                            if project_id not in project_hours_map:
+                                project_hours_map[project_id] = 0.0
+                            project_hours_map[project_id] += project.get('hours', 0.0)
+                        
+                        # Write one row per project/task
+                        for project in projects:
+                            project_id = project.get('project_id')
+                            project_hours_total = project_hours_map.get(project_id, 0.0)
+                            task_hours = project.get('hours', 0.0)
+                            
+                            writer.writerow([
+                                date_str,
+                                entry_type,
+                                f"{toggl_hours:.2f}",
+                                f"{total_hours:.2f}",
+                                f"{expected_hours:.2f}" if expected_hours > 0 else '',
+                                f"{ot_hours:.2f}",
+                                project.get('project_name', ''),
+                                project_id if project_id is not None else '',
+                                f"{project_hours_total:.2f}",
+                                project.get('task_name', ''),
+                                project.get('task_id') if project.get('task_id') is not None else '',
+                                f"{task_hours:.2f}"
+                            ])
+                    else:
+                        # No projects - write single row
+                        writer.writerow([
+                            date_str,
+                            entry_type,
+                            f"{toggl_hours:.2f}",
+                            f"{total_hours:.2f}",
+                            f"{expected_hours:.2f}" if expected_hours > 0 else '',
+                            f"{ot_hours:.2f}",
+                            '', '', '', '', '', ''
+                        ])
+                
+                writer.writerow([])
+        
         return file_path
     
     def export_admin_report_csv(self, reports: List[UserReport], year: int, month: int) -> Path:

@@ -198,48 +198,6 @@ def _generate_user_monthly_report(
     """Fetch cached data, aggregate, calculate overtime and build UserReport."""
     print(f"   [DEBUG] Generating report for {user.email} ({year}-{month:02d})")
     
-    # TODO: WRÓCIMY PÓŹNIEJ - SQLite storage dla processed statistics
-    # Wyłączone na razie - nie używamy SQLite do przechowywania processed statistics
-    # Zostajemy przy cache'ach API (Timetastic, Toggl) i bezpośrednim pobieraniu danych z API
-    # 
-    # # Check if processed results exist in SQLite
-    # monthly_stats = None
-    # daily_stats = None
-    # overtime_stats = None
-    # 
-    # if not force_refresh:
-    #     monthly_stats = storage.get_monthly_statistics(user.email, year, month)
-    #     if monthly_stats:
-    #         daily_stats = storage.get_daily_statistics(user.email, year, month)
-    #         overtime_stats = storage.get_overtime_data(user.email, year, month)
-    # 
-    # if monthly_stats and daily_stats and overtime_stats and not force_refresh:
-    #     # Use cached processed results from SQLite
-    #     print(f"   [DEBUG] Using cached processed results from SQLite")
-    #     
-    #     # Reconstruct monthly_data from cached statistics
-    #     monthly_data = {
-    #         'total_hours': monthly_stats['total_hours'],
-    #         'absence_hours': monthly_stats['absence_hours'],
-    #         'working_days': monthly_stats['working_days'],
-    #         'project_hours': monthly_stats['project_hours'],
-    #         'absence_breakdown': monthly_stats['absence_breakdown'],
-    #         'missing_days': monthly_stats['missing_days'],
-    #         'daily_data': daily_stats
-    #     }
-    #     
-    #     # Reconstruct overtime_data from cached statistics
-    #     overtime_data = overtime_stats
-    #     
-    #     print(f"   [DEBUG] Cached: Total hours={monthly_data.get('total_hours', 0):.2f}h")
-    # else:
-    
-    # Process from raw data (time entries and absences) - pobieramy bezpośrednio z API
-    # TODO: WRÓCIMY PÓŹNIEJ - SQLite storage dla raw data
-    # Wyłączone na razie - nie używamy SQLite do przechowywania raw data
-    # time_entries = storage.get_time_entries_for_user(user.email, start_date, end_date)
-    # absences = storage.get_absences_for_user(user.email, start_date, end_date)
-    
     # Pobieramy dane bezpośrednio z API (używają cache'ów wewnętrznych)
     start_iso = f"{start_date}T00:00:00Z"
     end_iso = f"{end_date}T23:59:59Z"
