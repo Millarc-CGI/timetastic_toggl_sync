@@ -170,6 +170,12 @@ python -m src.cli status
 # Generate all monthly reports (previous month)
 python -m src.cli report-monthly
 
+# Generate weekly reports (last week, Monday to Sunday)
+python -m src.cli report-weekly
+
+# Generate weekly report for specific week
+python -m src.cli report-weekly --week-start 2025-11-25
+
 # Generate reports for specific month
 python -m src.cli report-monthly --year 2025 --month 10
 
@@ -179,14 +185,17 @@ python -m src.cli report-monthly --role admin
 # Generate producer report only
 python -m src.cli report-monthly --role producer
 
-# Generate report for specific user
+# Generate report for specific user (by email or full name)
 python -m src.cli report-monthly --user user@company.com
+python -m src.cli report-weekly --user "John Doe"
 
 # Generate + Slack-send reports for every user
 python -m src.cli report-monthly --send-all-users
+python -m src.cli report-weekly --send-all-users
 
-# Refresh last week of data before sending Slack reports
+# Refresh cache before generating reports
 python -m src.cli report-monthly --send-all-users --refresh-cache
+python -m src.cli report-weekly --refresh-projects
 ```
 
 #### Notifications
