@@ -360,67 +360,6 @@ def sync_users():
 
 
 @cli.command()
-@click.option("--days", default=7, help="Number of days to check back (default: 7)")
-def check_missing(days: int):
-    """Check for missing time entries and send Slack reminders."""
-    settings = load_settings()
-    
-    if not settings.send_missing_entries_notifications:
-        print("ℹ️ Missing entries notifications are disabled in configuration")
-        return
-    
-    print(f"🔍 Checking for missing entries in the last {days} days...")
-    
-    try:
-        end_date = date.today()
-        start_date = end_date - timedelta(days=days)
-        
-        # Initialize services
-        user_service = UserService(settings)
-        slack_service = SlackService(settings)
-        storage = SQLiteStorage(settings)
-        aggregator = DataAggregator(settings)
-        
-        # Get users
-        users = storage.get_all_users()
-        if not users:
-            print("❌ No users found. Run 'sync-users' first.")
-            return
-
-        
-        # Get time entries and absences
-        time_entries = storage.get_time_entries_for_period(start_date, end_date)
-        absences = []
-        
-        # Get absences for each user
-        for user in users:
-            user_absences = storage.get_absences_for_user(user.email, start_date, end_date)
-            absences.extend(user_absences)
-        
-        # Detect missing entries
-        missing_by_user = aggregator.detect_missing_entries(users, time_entries, absences, start_date, end_date)
-        
-        # Send notifications
-        notifications_sent = 0
-        for user_email, missing_days in missing_by_user.items():
-            if missing_days:
-                user = next((u for u in users if u.email.lower() == user_email), None)
-                if user and user.slack_user_id:
-                    success = slack_service.send_missing_entries_reminder(user_email, missing_days, days)
-                    if success:
-                        notifications_sent += 1
-                        print(f"   📤 Sent reminder to {user.display_name}")
-                    else:
-                        print(f"   ❌ Failed to send reminder to {user.display_name}")
-        
-        print(f"✅ Sent {notifications_sent} missing entry reminders")
-        
-    except Exception as e:
-        print(f"❌ Missing entries check failed: {e}")
-        raise
-
-
-@cli.command()
 @click.option("--year", type=int, help="Year (defaults to previous month)")
 @click.option("--month", type=int, help="Month 1-12 (defaults to previous month)")
 @click.option("--user", "target_user", help="Generate report for specific user (email or full name)")
@@ -892,26 +831,6 @@ def report_weekly(week_start: Optional[str], target_user: Optional[str], send_al
 
 
 @cli.command()
-def notify_users():
-    """Send weekly Slack notifications about missing entries."""
-    settings = load_settings()
-    
-    if not settings.send_missing_entries_notifications:
-        print("ℹ️ Missing entries notifications are disabled in configuration")
-        return
-    
-    print("📤 Sending weekly missing entries notifications...")
-    
-    try:
-        # Use the check_missing command with default settings
-        check_missing.callback(settings.missing_entries_check_days)
-        
-    except Exception as e:
-        print(f"❌ Notification sending failed: {e}")
-        raise
-
-
-@cli.command()
 @click.option("--year", type=int, help="Year")
 @click.option("--month", type=int, help="Month")
 def export(year: Optional[int], month: Optional[int]):
@@ -1015,6 +934,97 @@ def status():
         
     except Exception as e:
         print(f"❌ Status check failed: {e}")
+
+
+@cli.command()
+@click.option("--days", default=7, help="Number of days to check back (default: 7)")
+def send_reminders(days: int):
+    """Check for missing time entries and send Slack reminders to active Toggl users."""
+    settings = load_settings()
+    
+    if not settings.send_missing_entries_notifications:
+        print("ℹ️ Missing entries notifications are disabled in configuration")
+        return
+    
+    print(f"🔍 Checking for missing entries in the last {days} days...")
+    
+    try:
+        end_date = date.today()
+        start_date = end_date - timedelta(days=days)
+        
+        # Initialize services
+        slack_service = SlackService(settings)
+        storage = SQLiteStorage(settings)
+        aggregator = DataAggregator(settings)
+        toggl_service = TogglService(settings, storage=storage)
+        timetastic_service = TimetasticService(settings, storage=storage)
+        
+        # Get users - only active Toggl users, excluding excluded users
+        all_users = storage.get_all_users()
+        if not all_users:
+            print("❌ No users found. Run 'sync-users' first.")
+            return
+        
+        # Filter: only active Toggl users, excluding excluded users
+        excluded_emails = settings.excluded_report_emails
+        users = [
+            u for u in all_users
+            if u.toggl_user_id and u.email and u.email.lower() not in excluded_emails
+        ]
+        
+        if not users:
+            print("⚠️ No eligible Toggl users found.")
+            return
+        
+        print(f"📋 Checking {len(users)} active Toggl users...")
+        
+        # Get time entries and absences for the period (fresh data from API)
+        start_iso = f"{start_date}T00:00:00Z"
+        end_iso = f"{end_date}T23:59:59Z"
+        
+        print("📊 Fetching time entries from Toggl...")
+        all_time_entries = toggl_service.get_time_entries(start_iso, end_iso)
+        print(f"   ✅ Found {len(all_time_entries)} time entries")
+        
+        print("🏖️ Fetching absences from Timetastic...")
+        all_absences = timetastic_service.get_holidays(start_iso, end_iso)
+        print(f"   ✅ Found {len(all_absences)} absences")
+        
+        # Detect missing entries
+        print("🔍 Detecting missing entries...")
+        missing_by_user = aggregator.detect_missing_entries(users, all_time_entries, all_absences, start_date, end_date)
+        
+        # Count users with missing entries
+        users_with_missing = sum(1 for missing_days in missing_by_user.values() if missing_days)
+        print(f"   Found {users_with_missing} user(s) with missing entries")
+        
+        # Send notifications only to users with missing entries
+        notifications_sent = 0
+        notifications_failed = 0
+        
+        print("📤 Sending reminders...")
+        for user in users:
+            user_email = user.email.lower()
+            missing_days = missing_by_user.get(user_email, [])
+            
+            if missing_days:
+                if user.slack_user_id:
+                    success = slack_service.send_missing_entries_reminder(user_email, missing_days, days)
+                    if success:
+                        notifications_sent += 1
+                        print(f"   ✅ Sent reminder to {user.display_name} ({len(missing_days)} missing days)")
+                    else:
+                        notifications_failed += 1
+                        print(f"   ❌ Failed to send reminder to {user.display_name}")
+                else:
+                    notifications_failed += 1
+                    print(f"   ⚠️ No Slack ID for {user.display_name}, skipped")
+        
+        print(f"✅ Sent {notifications_sent} reminders, {notifications_failed} failed/skipped")
+        
+    except Exception as e:
+        print(f"❌ Failed to send reminders: {e}")
+        raise
 
 
 @cli.command()

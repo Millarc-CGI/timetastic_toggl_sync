@@ -196,15 +196,18 @@ python -m src.cli report-weekly --send-all-users
 # Refresh cache before generating reports
 python -m src.cli report-monthly --send-all-users --refresh-cache
 python -m src.cli report-weekly --refresh-projects
+
+# Send admin report to admins via Slack (requires generated admin report)
+python -m src.cli send-admin-report
+python -m src.cli send-admin-report --year 2025 --month 11
 ```
 
 #### Notifications
 ```bash
-# Check for missing entries and send Slack reminders
-python -m src.cli check-missing
-
-# Send weekly notifications (uses configured schedule)
-python -m src.cli notify-users
+# Check for missing entries and send Slack reminders to active Toggl users
+# Only sends reminders to users who have missing entries
+python -m src.cli send-reminders
+python -m src.cli send-reminders --days 14  # Check last 14 days
 
 # Test Slack integration
 python -m src.cli test-slack
@@ -240,10 +243,11 @@ python -m src.tests.timetastic_test
 
 ### User Reports
 - Personal time tracking summary
-- Overtime calculations
-- Project breakdown
-- Absence summary
+- Overtime calculations (daily/weekly/monthly)
+- Project breakdown with task details
+- Daily overtime breakdown with project and task hours
 - Missing entries tracking
+- Export to XLSX with formatted tables and wide columns
 
 ### Producer Reports
 - Project-focused analytics
@@ -252,11 +256,13 @@ python -m src.tests.timetastic_test
 - Project efficiency metrics
 
 ### Admin Reports
-- Complete organizational overview
-- All user statistics
+- Complete organizational overview with all user statistics
 - Department breakdown
-- Financial summaries
-- System-wide analytics
+- Monthly and weekend overtime tracking
+- Missing time entries tracking
+- Export to XLSX with formatted tables and wide columns
+- Slack delivery via `send-admin-report` command
+- SQLite storage in `admin_statistics` table
 
 ## 🔐 Access Control
 
@@ -267,8 +273,8 @@ The system implements role-based access control:
 - **User**: Access to personal reports only
 
 Reports are stored with role-specific naming:
-- `admin_YYYY-MM.csv` - Admin reports
-- `user_email_YYYY-MM.csv` - Individual user reports
+- `admin_YYYY-MM.xlsx` - Admin reports (XLSX format)
+- `user_email_YYYY-MM.xlsx` - Individual user reports (XLSX format)
 
 ## 📅 Automation & Scheduling
 
@@ -282,8 +288,9 @@ Set up automated daily synchronization using cron (Linux/Mac) or Task Scheduler 
 
 ### Weekly Notifications
 ```bash
-# Weekly missing entries check (Fridays at 9 AM)
-0 9 * * 5 cd /path/to/project && python -m src.cli notify-users
+# Weekly missing entries reminders (Fridays at 9 AM)
+# Checks for missing entries and sends reminders only to users who have missing entries
+0 9 * * 5 cd /path/to/project && python -m src.cli send-reminders
 ```
 
 ### Monthly Reports
@@ -301,8 +308,9 @@ Set up automated daily synchronization using cron (Linux/Mac) or Task Scheduler 
 
 ### File Exports
 - **Location**: `./exports/YYYY-MM/` (configurable)
-- **Formats**: CSV, JSON
+- **Formats**: XLSX (formatted reports), JSON (raw data backup)
 - **Organization**: Role-based file naming and directory structure
+- **Features**: Formatted tables, wide columns, frozen headers, color-coded headers
 
 ## 🔧 Customization
 
