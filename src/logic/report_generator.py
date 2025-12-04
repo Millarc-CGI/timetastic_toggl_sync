@@ -51,8 +51,10 @@ class ReportGenerator:
             report_type=report_type,
             period_label=period_label,
             total_hours=user_data.get('total_hours', 0),
+            expected_hours=overtime_data.get('monthly_expected_hours', 0.0),
             weekly_overtime=overtime_data.get('weekly_overtime', 0),
             monthly_overtime=overtime_data.get('monthly_overtime', 0),
+            weekend_overtime=overtime_data.get('weekend_overtime', 0.0),
             projects_worked=list(project_hours.keys()),
             project_tasks=project_tasks,
             missing_days=missing_days,
@@ -136,6 +138,7 @@ class ReportGenerator:
         self,
         users: List[User],
         all_user_data: Dict[str, Dict[str, Any]],
+        all_overtime_data: Dict[str, Dict[str, Any]],
         year: int,
         month: int
     ) -> List[UserReport]:
@@ -146,6 +149,7 @@ class ReportGenerator:
         for user in users:
             user_email = user.email.lower()
             user_data = all_user_data.get(user_email, {})
+            overtime_data = all_overtime_data.get(user_email, {})
             
             if not user_data:
                 continue
@@ -157,7 +161,7 @@ class ReportGenerator:
                 year=year,
                 month=month,
                 user_data=user_data,
-                overtime_data={},  # Would need overtime calculation
+                overtime_data=overtime_data,
                 department=user.department
             )
             

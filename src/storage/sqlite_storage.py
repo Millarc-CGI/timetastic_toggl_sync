@@ -216,6 +216,27 @@ class SQLiteStorage:
                 )
             """)
             
+            # Admin statistics table - aggregated admin statistics per user per month
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS admin_statistics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_email TEXT,
+                    user_name TEXT,
+                    department TEXT,
+                    year INTEGER,
+                    month INTEGER,
+                    period TEXT,
+                    total_hours REAL,
+                    expected_hours REAL,
+                    monthly_overall_overtime REAL,
+                    weekend_overtime REAL,
+                    missing_entries_count INTEGER,
+                    generated_at TEXT,
+                    created_at TEXT,
+                    UNIQUE(user_email, year, month)
+                )
+            """)
+            
             # Create indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_time_entries_user_email ON time_entries(user_email)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_time_entries_start_time ON time_entries(start_time)")
@@ -226,6 +247,8 @@ class SQLiteStorage:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_stats_user_date ON daily_statistics(user_email, date)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_stats_monthly_id ON daily_statistics(monthly_statistics_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_overtime_user_period ON overtime_data(user_email, year, month)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_admin_stats_user_period ON admin_statistics(user_email, year, month)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_admin_stats_period ON admin_statistics(year, month)")
             
             conn.commit()
     
@@ -872,6 +895,134 @@ class SQLiteStorage:
         except Exception as e:
             print(f"Error saving processed data for {user_email} ({year}-{month:02d}): {e}")
             return False
+    
+    def save_admin_statistics(
+        self,
+        user_email: str,
+        user_name: str,
+        department: Optional[str],
+        year: int,
+        month: int,
+        total_hours: float,
+        expected_hours: float,
+        monthly_overall_overtime: float,
+        weekend_overtime: float,
+        missing_entries_count: int
+    ) -> bool:
+        """Save admin statistics for a user/month."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                now = datetime.now().isoformat()
+                period = f"{year}-{month:02d}"
+                
+                # Traktuj ujemne overtime jako 0
+                monthly_overall_overtime = max(0.0, monthly_overall_overtime)
+                weekend_overtime = max(0.0, weekend_overtime)
+                
+                cursor.execute("""
+                    INSERT OR REPLACE INTO admin_statistics
+                    (user_email, user_name, department, year, month, period,
+                     total_hours, expected_hours, monthly_overall_overtime, weekend_overtime,
+                     missing_entries_count, generated_at, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    user_email.lower(),
+                    user_name,
+                    department,
+                    year,
+                    month,
+                    period,
+                    total_hours,
+                    expected_hours,
+                    monthly_overall_overtime,
+                    weekend_overtime,
+                    missing_entries_count,
+                    now,
+                    now
+                ))
+                
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"Error saving admin statistics for {user_email} ({year}-{month:02d}): {e}")
+            return False
+    
+    def get_admin_statistics(
+        self,
+        year: int,
+        month: int
+    ) -> Dict[str, Any]:
+        """Get admin statistics for a month with summary."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Get all user statistics for the month
+                cursor.execute("""
+                    SELECT user_email, user_name, department, period,
+                           total_hours, expected_hours, monthly_overall_overtime,
+                           weekend_overtime, missing_entries_count
+                    FROM admin_statistics
+                    WHERE year = ? AND month = ?
+                    ORDER BY user_name
+                """, (year, month))
+                
+                rows = cursor.fetchall()
+                
+                user_stats = []
+                total_hours_sum = 0.0
+                total_overtime_sum = 0.0
+                total_weekend_overtime_sum = 0.0
+                
+                for row in rows:
+                    user_stat = {
+                        'user_email': row[0],
+                        'user_name': row[1],
+                        'department': row[2],
+                        'period': row[3],
+                        'total_hours': row[4],
+                        'expected_hours': row[5],
+                        'monthly_overall_overtime': row[6],
+                        'weekend_overtime': row[7],
+                        'missing_entries_count': row[8]
+                    }
+                    user_stats.append(user_stat)
+                    
+                    total_hours_sum += row[4] or 0.0
+                    # Traktuj ujemne overtime jako 0 w podsumowaniu
+                    total_overtime_sum += max(0.0, row[6] or 0.0)
+                    total_weekend_overtime_sum += max(0.0, row[7] or 0.0)
+                
+                user_count = len(user_stats)
+                
+                return {
+                    'year': year,
+                    'month': month,
+                    'period': f"{year}-{month:02d}",
+                    'user_statistics': user_stats,
+                    'summary': {
+                        'total_hours': total_hours_sum,
+                        'total_overtime': total_overtime_sum,
+                        'total_weekend_overtime': total_weekend_overtime_sum,
+                        'user_count': user_count
+                    }
+                }
+        except Exception as e:
+            print(f"Error getting admin statistics for {year}-{month:02d}: {e}")
+            return {
+                'year': year,
+                'month': month,
+                'period': f"{year}-{month:02d}",
+                'user_statistics': [],
+                'summary': {
+                    'total_hours': 0.0,
+                    'total_overtime': 0.0,
+                    'total_weekend_overtime': 0.0,
+                    'average_hours_per_user': 0.0,
+                    'user_count': 0
+                }
+            }
     
     # Processed statistics methods - read
     def get_monthly_statistics(

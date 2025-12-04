@@ -548,8 +548,8 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
                 monthly_data, overtime_data, user_report = _generate_user_monthly_report(
                     user_obj, start_date, end_date, aggregator, overtime_calc, report_gen, toggl_service, timetastic_service, storage, year, month
                 )
-                csv_file = file_storage.export_user_report_csv(user_report)
-                print(f"📄 User report exported to: {csv_file}")
+                xlsx_file = file_storage.export_user_report_xlsx(user_report)
+                print(f"📄 User report exported to: {xlsx_file}")
                 if slack_service:
                     if user_obj.slack_user_id:
                         # Use slack_user_id directly instead of searching by email
@@ -567,19 +567,53 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
 
         elif role:
             if role == "admin":
+                # Filter: only active Toggl users + admins + producers, excluding excluded users
+                excluded_emails = settings.excluded_report_emails
+                filtered_users_for_admin = [
+                    user for user in users
+                    if (user.toggl_user_id  # Active Toggl user
+                        or (user.email and settings.is_admin(user.email))  # Admin
+                        or (user.email and settings.is_producer(user.email)))  # Producer
+                    and (not user.email or user.email.lower() not in excluded_emails)  # Not excluded
+                ]
+                
                 all_user_data = {}
-                for user in users:
-                    monthly_data, _, _ = _generate_user_monthly_report(
+                all_overtime_data = {}
+                for user in filtered_users_for_admin:
+                    monthly_data, overtime_data, _ = _generate_user_monthly_report(
                         user, start_date, end_date, aggregator, overtime_calc, report_gen, toggl_service, timetastic_service, storage, year, month, force_refresh
                     )
                     all_user_data[user.email.lower()] = monthly_data
-                admin_reports = report_gen.generate_admin_report(users, all_user_data, year, month)
-                csv_file = file_storage.export_admin_report_csv(admin_reports, year, month)
-                print(f"📄 Admin report exported to: {csv_file}")
+                    all_overtime_data[user.email.lower()] = overtime_data
+                admin_reports = report_gen.generate_admin_report(filtered_users_for_admin, all_user_data, all_overtime_data, year, month)
+                
+                # Save admin statistics to SQLite
+                for user in filtered_users_for_admin:
+                    user_email = user.email.lower()
+                    if user_email in all_user_data and user_email in all_overtime_data:
+                        monthly_data = all_user_data[user_email]
+                        overtime_data = all_overtime_data[user_email]
+                        missing_count = len(monthly_data.get('missing_days', []))
+                        storage.save_admin_statistics(
+                            user_email=user.email,
+                            user_name=user.display_name or user.email,
+                            department=user.department,
+                            year=year,
+                            month=month,
+                            total_hours=monthly_data.get('total_hours', 0.0),
+                            expected_hours=overtime_data.get('monthly_expected_hours', 0.0),
+                            monthly_overall_overtime=overtime_data.get('monthly_overtime', 0.0),
+                            weekend_overtime=overtime_data.get('weekend_overtime', 0.0),
+                            missing_entries_count=missing_count
+                        )
+                
+                xlsx_file = file_storage.export_admin_report_xlsx(admin_reports, year, month)
+                print(f"📄 Admin report exported to: {xlsx_file}")
 
         else:
             print("📊 Generating all report types...")
             all_user_data = {}
+            all_overtime_data = {}
             admin_reports: Optional[list] = None
             # Filter: only active Toggl users + admins + producers, excluding excluded users
             filtered_users_for_reports = [
@@ -595,15 +629,37 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
                     user_obj, start_date, end_date, aggregator, overtime_calc, report_gen, toggl_service, timetastic_service, storage, year, month
                 )
                 all_user_data[user_obj.email.lower()] = monthly_data
-                csv_file = file_storage.export_user_report_csv(user_report)
-                print(f"   📄 User report for {user_obj.display_name}: {csv_file}")
+                all_overtime_data[user_obj.email.lower()] = overtime_data
+                xlsx_file = file_storage.export_user_report_xlsx(user_report)
+                print(f"   📄 User report for {user_obj.display_name}: {xlsx_file}")
                 if send_all_users and slack_service:
                     success = slack_service.send_monthly_report(user_obj.email, user_report.to_dict())
                     status = "sent" if success else "failed"
                     print(f"      📤 Slack report {status} for {user_obj.display_name}")
-            admin_reports = report_gen.generate_admin_report(filtered_users_for_reports, all_user_data, year, month)
-            admin_csv = file_storage.export_admin_report_csv(admin_reports, year, month)
-            print(f"   📄 Admin report: {admin_csv}")
+            admin_reports = report_gen.generate_admin_report(filtered_users_for_reports, all_user_data, all_overtime_data, year, month)
+            
+            # Save admin statistics to SQLite
+            for user_obj in filtered_users_for_reports:
+                user_email = user_obj.email.lower()
+                if user_email in all_user_data and user_email in all_overtime_data:
+                    monthly_data = all_user_data[user_email]
+                    overtime_data = all_overtime_data[user_email]
+                    missing_count = len(monthly_data.get('missing_days', []))
+                    storage.save_admin_statistics(
+                        user_email=user_obj.email,
+                        user_name=user_obj.display_name or user_obj.email,
+                        department=user_obj.department,
+                        year=year,
+                        month=month,
+                        total_hours=monthly_data.get('total_hours', 0.0),
+                        expected_hours=overtime_data.get('monthly_expected_hours', 0.0),
+                        monthly_overall_overtime=overtime_data.get('monthly_overtime', 0.0),
+                        weekend_overtime=overtime_data.get('weekend_overtime', 0.0),
+                        missing_entries_count=missing_count
+                    )
+            
+            admin_xlsx = file_storage.export_admin_report_xlsx(admin_reports, year, month)
+            print(f"   📄 Admin report: {admin_xlsx}")
             print(f"✅ Generated all reports for {year}-{month:02d} ({len(filtered_users_for_reports)} users)")
 
     except Exception as e:
@@ -959,6 +1015,60 @@ def status():
         
     except Exception as e:
         print(f"❌ Status check failed: {e}")
+
+
+@cli.command()
+@click.option("--year", type=int, help="Year (defaults to previous month)")
+@click.option("--month", type=int, help="Month 1-12 (defaults to previous month)")
+def send_admin_report(year: Optional[int], month: Optional[int]):
+    """Send admin report to admins via Slack."""
+    settings = load_settings()
+    
+    # Determine target month
+    if not year or not month:
+        today = date.today()
+        first_this = today.replace(day=1)
+        last_prev = first_this - timedelta(days=1)
+        year, month = last_prev.year, last_prev.month
+    
+    print(f"📤 Sending admin report for {year}-{month:02d} to admins...")
+    
+    try:
+        # Initialize services
+        slack_service = SlackService(settings) if settings.send_monthly_reports else None
+        if not slack_service:
+            print("❌ Slack service not available. Check SEND_MONTHLY_REPORTS setting.")
+            return
+        
+        file_storage = FileStorage(settings)
+        admin_xlsx_path = file_storage._get_role_file_path("admin", year, month, "xlsx")
+        
+        # Check if file exists
+        if not admin_xlsx_path.exists():
+            print(f"❌ Admin report file not found: {admin_xlsx_path}")
+            print(f"   Please generate the report first using: report-monthly --role admin")
+            return
+        
+        # Send to all admins
+        if not settings.admin_emails:
+            print("⚠️ No admin emails found in ADMIN_EMAILS")
+            return
+        
+        print(f"📤 Sending admin report to {len(settings.admin_emails)} admin(s)...")
+        success_count = 0
+        for admin_email in settings.admin_emails:
+            print(f"   🔍 Checking admin: {admin_email}")
+            success = slack_service.send_admin_report(str(admin_email), str(admin_xlsx_path), year, month)
+            status = "✅ sent" if success else "❌ failed"
+            print(f"      {status} to {admin_email}")
+            if success:
+                success_count += 1
+        
+        print(f"✅ Sent admin report to {success_count}/{len(settings.admin_emails)} admin(s)")
+        
+    except Exception as e:
+        print(f"❌ Failed to send admin report: {e}")
+        raise
 
 
 @cli.command()

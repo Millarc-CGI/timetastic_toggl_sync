@@ -79,6 +79,7 @@ class Settings:
     # Access Control
     admin_emails: Set[str]
     producer_emails: Set[str]
+    excluded_admin_emails: Set[str]  # Admins excluded from receiving admin reports
     run_token: str
     email_aliases: Dict[str, str]  # Maps alternative emails to canonical email
     
@@ -155,6 +156,7 @@ def load_settings() -> Settings:
         # Access Control
         admin_emails=_split_csv_set(os.getenv("ADMIN_EMAILS", "")),
         producer_emails=_split_csv_set(os.getenv("PRODUCER_EMAILS", "")),
+        excluded_admin_emails=_split_csv_set(os.getenv("EXCLUDED_ADMIN_EMAILS", "")),
         run_token=os.getenv("RUN_TOKEN", "").strip(),
         # Email aliases: maps alternative emails to canonical email (normalized to lowercase)
         email_aliases={k.lower().strip(): v.lower().strip() for k, v in (_parse_json(os.getenv("EMAIL_ALIASES", "{}"), {}) or {}).items()},

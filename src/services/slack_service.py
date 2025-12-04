@@ -6,10 +6,13 @@ try:
     from slack_sdk import WebClient
     from slack_sdk.errors import SlackApiError
 except ImportError:
+    import sys
     print("Error: slack_sdk not installed. Install with: pip install slack_sdk")
     sys.exit(1)
+import os
 from typing import List, Dict, Any, Optional
 from datetime import datetime, date
+from pathlib import Path
 
 from ..config import Settings
 
@@ -277,3 +280,75 @@ If you're receiving this message, the Slack integration is working correctly.
 *Test completed at:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
         
         return self.send_dm(user_id, message)
+    
+    def send_file_dm(
+        self, 
+        user_id: str, 
+        file_path: str, 
+        message: str,
+        title: Optional[str] = None
+    ) -> bool:
+        """Send file as direct message to user."""
+        # Check if file exists
+        if not os.path.exists(file_path):
+            print(f"❌ File not found: {file_path}")
+            return False
+        
+        try:
+            # Open DM conversation to get channel ID
+            conv_response = self.client.conversations_open(users=user_id)
+            if not conv_response.get('ok'):
+                print(f"❌ Failed to open DM conversation with {user_id}: {conv_response.get('error')}")
+                return False
+            
+            channel_id = conv_response['channel']['id']
+            
+            # Upload file using channel ID
+            with open(file_path, 'rb') as file_content:
+                response = self.client.files_upload_v2(
+                    channel=channel_id,
+                    file=file_content,
+                    filename=os.path.basename(file_path),
+                    title=title or os.path.basename(file_path),
+                    initial_comment=message
+                )
+                return response.get('ok', False)
+        except SlackApiError as e:
+            print(f"❌ Failed to send file to {user_id}: {e}")
+            return False
+        except Exception as e:
+            print(f"❌ Error sending file to {user_id}: {e}")
+            return False
+    
+    def send_admin_report(
+        self,
+        admin_email: str,
+        file_path: str,
+        year: int,
+        month: int
+    ) -> bool:
+        """Send admin report file to admin user."""
+        # Check if file exists
+        if not os.path.exists(file_path):
+            print(f"❌ Admin report file not found: {file_path}")
+            return False
+        
+        # Find user by email
+        user = self.find_user_by_email(admin_email)
+        if not user:
+            print(f"⚠️ Admin user not found in Slack for email: {admin_email}")
+            return False
+        
+        user_id = user['id']
+        user_name = user.get('real_name') or user.get('name', 'Admin')
+        
+        message = f"📊 Monthly user report ({year}-{month:02d}) is ready. You can download it below."
+        
+        print(f"📤 Sending admin report to {user_name} ({admin_email}) - Slack ID: {user_id}")
+        
+        return self.send_file_dm(
+            user_id=user_id,
+            file_path=file_path,
+            message=message,
+            title=f"Admin Report {year}-{month:02d}"
+        )

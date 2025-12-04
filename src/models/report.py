@@ -55,10 +55,12 @@ class UserReport:
     
     # Time tracking summary
     total_hours: float = 0.0
+    expected_hours: float = 0.0
     
     # Overtime breakdown
     weekly_overtime: float = 0.0
     monthly_overtime: float = 0.0
+    weekend_overtime: float = 0.0
     
     # Project summary
     projects_worked: List[str] = None
@@ -120,8 +122,10 @@ class UserReport:
             'report_type': self.report_type,
             'period_label': self.period_label,
             'total_hours': self.total_hours,
+            'expected_hours': self.expected_hours,
             'weekly_overtime': self.weekly_overtime,
             'monthly_overtime': self.monthly_overtime,
+            'weekend_overtime': self.weekend_overtime,
             'projects_worked': self.projects_worked,
             'project_tasks': self.project_tasks,
             'missing_days': [d.isoformat() for d in self.missing_days],
