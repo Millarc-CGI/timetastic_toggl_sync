@@ -318,6 +318,7 @@ class TogglService:
         end_date: str,
         workspace_id: Optional[int] = None,
         user_ids: Optional[List[int]] = None,
+        force_refresh: bool = False,
     ) -> List[TimeEntry]:
         """
         Get time entries for a date range across a workspace, optionally filtered by users.
@@ -367,13 +368,13 @@ class TogglService:
             if cache_metadata:
                 is_fresh, has_dirty = self._is_cache_fresh(int(workspace), year, month, cache_metadata)
                 
-                # Use cache if fresh and no dirty ranges
-                if is_fresh and not has_dirty:
+                # Use cache if fresh and no dirty ranges AND not forcing refresh
+                if is_fresh and not has_dirty and not force_refresh:
                     cached_payload = self._load_cached_entries(cache_path)
                     if cached_payload is not None:
                         normalized_entries = cached_payload
                         should_fetch = False
-                elif is_fresh and has_dirty:
+                elif is_fresh and has_dirty and not force_refresh:
                     # Cache is fresh but has dirty ranges - use stale cache but queue refresh
                     cached_payload = self._load_cached_entries(cache_path)
                     if cached_payload is not None:

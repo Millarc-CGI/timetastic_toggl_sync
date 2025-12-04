@@ -67,6 +67,9 @@ class UserReport:
     # Missing entries
     missing_days: List[date] = None
     
+    # Entries without project
+    no_project_entries_count: int = 0
+    
     # Metadata
     generated_at: Optional[datetime] = None
     
@@ -96,6 +99,11 @@ class UserReport:
         """Check if user has missing time entries."""
         return len(self.missing_days) > 0
     
+    @property
+    def has_no_project_entries(self) -> bool:
+        """Check if user has entries without project."""
+        return self.no_project_entries_count > 0
+    
     def to_dict(self) -> Dict[str, Any]:
         """Convert report to dictionary for storage."""
         return {
@@ -112,5 +120,6 @@ class UserReport:
             'projects_worked': self.projects_worked,
             'project_tasks': self.project_tasks,
             'missing_days': [d.isoformat() for d in self.missing_days],
+            'no_project_entries_count': self.no_project_entries_count,
             'generated_at': self.generated_at.isoformat() if self.generated_at else None,
         }

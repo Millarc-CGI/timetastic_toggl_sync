@@ -248,6 +248,12 @@ class DataAggregator:
             for absence_type, hours in absence_hours_breakdown.items()
         }
         
+        # Count entries without project
+        no_project_entries_count = sum(
+            1 for entry in month_entries 
+            if entry.project_id is None or not entry.project_name
+        )
+        
         return {
             'user_email': user_email,
             'year': year,
@@ -265,6 +271,7 @@ class DataAggregator:
             'absence_review_days': absence_review_days,
             'daily_data': daily_data,
             'time_entries_count': len(month_entries),
+            'no_project_entries_count': no_project_entries_count,
             'absences_count': len(month_absences),
             'project_task_hours': {
                 project: dict(tasks) for project, tasks in project_task_hours.items()
@@ -383,6 +390,12 @@ class DataAggregator:
             for absence_type, hours in absence_hours_breakdown.items()
         }
         
+        # Count entries without project
+        no_project_entries_count = sum(
+            1 for entry in week_entries 
+            if entry.project_id is None or not entry.project_name
+        )
+        
         return {
             'user_email': user_email,
             'period_start': week_start,
@@ -398,6 +411,7 @@ class DataAggregator:
             'absence_review_days': absence_review_days,
             'daily_data': daily_data,
             'time_entries_count': len(week_entries),
+            'no_project_entries_count': no_project_entries_count,
             'absences_count': len(week_absences),
             'project_task_hours': {
                 project: dict(tasks) for project, tasks in project_task_hours.items()

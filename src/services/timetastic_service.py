@@ -186,6 +186,7 @@ class TimetasticService:
         start_date: str,
         end_date: str,
         user_ids: Optional[List[int]] = None,
+        force_refresh: bool = False,
     ) -> List[Absence]:
         """
         Get holidays for date range.
@@ -219,14 +220,14 @@ class TimetasticService:
             if cache_metadata:
                 is_fresh, has_dirty = self._is_cache_fresh(year, month, cache_metadata)
                 
-                # Use cache if fresh and no dirty ranges
-                if is_fresh and not has_dirty:
+                # Use cache if fresh and no dirty ranges AND not forcing refresh
+                if is_fresh and not has_dirty and not force_refresh:
                     disk_payload = self._load_cached_holidays(disk_cache_path)
                     if disk_payload is not None:
                         raw_holidays = disk_payload
                         self._holidays_cache[cache_key] = raw_holidays
                         should_fetch = False
-                elif is_fresh and has_dirty:
+                elif is_fresh and has_dirty and not force_refresh:
                     # Cache is fresh but has dirty ranges - use stale cache but queue refresh
                     disk_payload = self._load_cached_holidays(disk_cache_path)
                     if disk_payload is not None:
@@ -291,7 +292,6 @@ class TimetasticService:
                     
                     page += 1
                 
-                print(f"   [DEBUG TimetasticCache] Fetched {len(raw_holidays)} holidays from API")
                 self._holidays_cache[cache_key] = raw_holidays
                 
                 # Store cache and update metadata if cacheable

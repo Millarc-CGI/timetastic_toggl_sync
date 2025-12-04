@@ -93,11 +93,11 @@ def _sync_range(settings, start_date: date, end_date: date, sync_type: str = "ma
         end_iso = f"{end_date}T23:59:59Z"
 
         print("📊 Fetching time entries from Toggl...")
-        time_entries = toggl_service.get_time_entries(start_iso, end_iso)
+        time_entries = toggl_service.get_time_entries(start_iso, end_iso, force_refresh=True)
         print(f"   ✅ Found {len(time_entries)} time entries")
 
         print("🏖️ Fetching absences from Timetastic...")
-        absences = timetastic_service.get_holidays(start_iso, end_iso)
+        absences = timetastic_service.get_holidays(start_iso, end_iso, force_refresh=True)
         # Removed duplicate absences log
 
         print("💾 Saving data to database...")
@@ -121,7 +121,7 @@ def _sync_users_and_cache(settings):
     user_service = UserService(settings)
     storage = SQLiteStorage(settings)
 
-    print("?? Refreshing user mappings before reporting...")
+    print("🔄 Refreshing user mappings before reporting...")
     users = user_service.sync_users_from_services()
     saved = 0
     for user in users:
@@ -158,7 +158,7 @@ def _build_slack_email_map(slack_service: SlackService) -> dict:
     try:
         members = slack_service.get_users()
     except Exception as exc:
-        print(f"?? Slack lookup failed (users_list): {exc}")
+        print(f"⚠️ Slack lookup failed (users_list): {exc}")
         return {}
 
     mapping = {}
@@ -235,8 +235,6 @@ def _generate_user_monthly_report(
     # else:
     
     # Process from raw data (time entries and absences) - pobieramy bezpośrednio z API
-    print(f"   [DEBUG] Processing from raw data (fetching from API)...")
-    
     # TODO: WRÓCIMY PÓŹNIEJ - SQLite storage dla raw data
     # Wyłączone na razie - nie używamy SQLite do przechowywania raw data
     # time_entries = storage.get_time_entries_for_user(user.email, start_date, end_date)
@@ -256,13 +254,10 @@ def _generate_user_monthly_report(
     else:
         time_entries = all_time_entries
     
-    print(f"   [DEBUG] API: Found {len(time_entries)} time entries from Toggl API")
-    
     # Pobierz absences z Timetastic (używa cache jeśli dostępny)
     timetastic_user_id = user.timetastic_user_id if user.timetastic_user_id else None
     user_ids_for_absences = [timetastic_user_id] if timetastic_user_id else None
     absences = timetastic_service.get_holidays(start_iso, end_iso, user_ids=user_ids_for_absences)
-    print(f"   [DEBUG] API: Found {len(absences)} absences from Timetastic API")
     
     monthly_data = aggregator.aggregate_monthly(user.email, year, month, time_entries, absences)
     
@@ -285,8 +280,6 @@ def _generate_user_monthly_report(
         overtime_data=overtime_data,
         department=user.department,
     )
-    print(f"   [DEBUG] ReportGen: Report created, total_hours={monthly_report.total_hours:.2f}h")
-    
     return monthly_data, overtime_data, monthly_report
 
 @cli.command()
@@ -489,7 +482,7 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
         last_prev = first_this - timedelta(days=1)
         year, month = last_prev.year, last_prev.month
 
-    print(f"?? Generating monthly reports for {year}-{month:02d}...")
+    print(f"📊 Generating monthly reports for {year}-{month:02d}...")
 
     try:
         start_date = date(year, month, 1)
@@ -502,39 +495,34 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
         users = None
         if refresh_cache:
             users = _sync_users_and_cache(settings)
-            print(f"?? Refreshing cache for whole month ({start_date} to {end_date}) before reporting...")
+            print(f"🔄 Refreshing cache for whole month ({start_date} to {end_date}) before reporting...")
             _sync_range(settings, start_date, end_date, "monthly_refresh")
 
         # Initialize services
-        print(f"[DEBUG] Initializing services for {year}-{month:02d}...")
         storage = SQLiteStorage(settings)  # Still used for user management
         toggl_service = TogglService(settings, storage=storage)  # Create for API tracking and cache
         timetastic_service = TimetasticService(settings, storage=storage)  # Create for API tracking and cache
         
         # Refresh projects cache if requested
         if refresh_projects:
-            print(f"[DEBUG] Refreshing projects cache...")
             try:
                 toggl_service.get_projects(force_refresh=True)
-                print(f"[DEBUG] Projects cache refreshed")
             except Exception as e:
-                print(f"[DEBUG] Warning: Failed to refresh projects cache: {e}")
+                print(f"⚠️ Warning: Failed to refresh projects cache: {e}")
         
         file_storage = FileStorage(settings)
         aggregator = DataAggregator(settings)
         overtime_calc = OvertimeCalculator(settings)
         report_gen = ReportGenerator(settings)
-        print(f"[DEBUG] Services initialized")
 
         if users is None:
             users = storage.get_all_users()
         if not users:
-            print("? No users found. Run 'sync-users' first.")
+            print("❌ No users found. Run 'sync-users' first.")
             return
-        print(f"[DEBUG] Found {len(users)} users in storage")
 
         if send_all_users and not settings.send_monthly_reports:
-            print("?? SEND_MONTHLY_REPORTS disabled; enable it to deliver Slack summaries.")
+            print("⚠️ SEND_MONTHLY_REPORTS disabled; enable it to deliver Slack summaries.")
             send_all_users = False
 
         slack_service: Optional[SlackService] = SlackService(settings) if settings.send_monthly_reports else None
@@ -543,24 +531,17 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
             slack_email_map = _build_slack_email_map(slack_service)
 
         excluded_emails = settings.excluded_report_emails
-        included_emails = settings.included_report_emails
         eligible_users = users
         if send_all_users:
-            if included_emails:
-                eligible_users = [
-                    u for u in users
-                    if u.toggl_user_id and u.email and u.email.lower() in included_emails
-                ]
-            else:
-                eligible_users = [
-                    u for u in users
-                    if u.toggl_user_id and u.email and u.email.lower() not in excluded_emails
-                ]
+            eligible_users = [
+                u for u in users
+                if u.toggl_user_id and u.email and u.email.lower() not in excluded_emails
+            ]
             if not eligible_users:
-                print("?? No eligible Toggl users found; nothing to send.")
+                print("⚠️ No eligible Toggl users found; nothing to send.")
                 return
-            print(f"?? Sending Slack reports for {len(eligible_users)} Toggl users")
-            print("?? Recipients:")
+            print(f"📤 Sending Slack reports for {len(eligible_users)} Toggl users")
+            print("📋 Recipients:")
             for idx, user_obj in enumerate(eligible_users, start=1):
                 slack_info = f", slack_id={user_obj.slack_user_id}" if user_obj.slack_user_id else ""
                 timetastic_info = f", timetastic_id={user_obj.timetastic_user_id}" if user_obj.timetastic_user_id else ""
@@ -577,29 +558,29 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
                     )
                 except Exception as exc:
                     failures += 1
-                    print(f"   ? Failed to build report for {user_label}: {exc}")
+                    print(f"   ❌ Failed to build report for {user_label}: {exc}")
                     continue
 
                 if slack_service:
                     slack_user_id = user_obj.slack_user_id or slack_email_map.get(user_obj.email.lower())
                     if not slack_user_id:
                         failures += 1
-                        print(f"   ? Slack user not found for {user_obj.email} (missing email match or deleted user); skipped sending.")
+                        print(f"   ⚠️ Slack user not found for {user_obj.email} (missing email match or deleted user); skipped sending.")
                         continue
                     try:
                         success = slack_service.send_dm(slack_user_id, report_gen.format_user_report_summary(user_report))
                     except Exception as exc:
                         success = False
-                        print(f"   ? Slack send exception for {user_label}: {exc}")
+                        print(f"   ❌ Slack send exception for {user_label}: {exc}")
                     status = "sent" if success else "failed"
                     if success:
                         successes += 1
                     else:
                         failures += 1
-                    print(f"   ?? Slack report {status} for {user_label} (slack_id={slack_user_id})")
+                    print(f"   📤 Slack report {status} for {user_label} (slack_id={slack_user_id})")
                 else:
-                    print(f"   ?? Slack disabled; generated report for {user_label} but not sent.")
-            print(f"? Bulk Slack reporting finished: {successes} sent, {failures} failed")
+                    print(f"   ⚠️ Slack disabled; generated report for {user_label} but not sent.")
+            print(f"✅ Bulk Slack reporting finished: {successes} sent, {failures} failed")
             return
 
         # Generate reports based on parameters
@@ -610,12 +591,21 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
                     user_obj, start_date, end_date, aggregator, overtime_calc, report_gen, toggl_service, timetastic_service, storage, year, month
                 )
                 csv_file = file_storage.export_user_report_csv(user_report)
-                print(f"? User report exported to: {csv_file}")
+                print(f"📄 User report exported to: {csv_file}")
                 if slack_service:
-                    slack_service.send_monthly_report(user_obj.email, user_report.to_dict())
-                    print(f"?? Monthly report sent to {user_obj.display_name}")
+                    if user_obj.slack_user_id:
+                        # Use slack_user_id directly instead of searching by email
+                        success = slack_service.send_dm(user_obj.slack_user_id, report_gen.format_user_report_summary(user_report))
+                        if success:
+                            print(f"📤 Monthly report sent to {user_obj.display_name}")
+                        else:
+                            print(f"⚠️ Failed to send monthly report to {user_obj.display_name}")
+                    else:
+                        # Fallback: try to find by email (for users without slack_user_id)
+                        slack_service.send_monthly_report(user_obj.email, user_report.to_dict())
+                        print(f"📤 Monthly report sent to {user_obj.display_name}")
             else:
-                print(f"? User {target_user} not found or has no data for this period")
+                print(f"⚠️ User {target_user} not found or has no data for this period")
 
         elif role:
             if role == "admin":
@@ -627,10 +617,10 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
                     all_user_data[user.email.lower()] = monthly_data
                 admin_reports = report_gen.generate_admin_report(users, all_user_data, year, month)
                 csv_file = file_storage.export_admin_report_csv(admin_reports, year, month)
-                print(f"? Admin report exported to: {csv_file}")
+                print(f"📄 Admin report exported to: {csv_file}")
 
         else:
-            print("?? Generating all report types...")
+            print("📊 Generating all report types...")
             all_user_data = {}
             admin_reports: Optional[list] = None
             # Filter: only active Toggl users + admins + producers, excluding excluded users
@@ -648,18 +638,18 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
                 )
                 all_user_data[user_obj.email.lower()] = monthly_data
                 csv_file = file_storage.export_user_report_csv(user_report)
-                print(f"   ? User report for {user_obj.display_name}: {csv_file}")
+                print(f"   📄 User report for {user_obj.display_name}: {csv_file}")
                 if send_all_users and slack_service:
                     success = slack_service.send_monthly_report(user_obj.email, user_report.to_dict())
                     status = "sent" if success else "failed"
-                    print(f"      ?? Slack report {status} for {user_obj.display_name}")
+                    print(f"      📤 Slack report {status} for {user_obj.display_name}")
             admin_reports = report_gen.generate_admin_report(filtered_users_for_reports, all_user_data, year, month)
             admin_csv = file_storage.export_admin_report_csv(admin_reports, year, month)
-            print(f"   ? Admin report: {admin_csv}")
-            print(f"? Generated all reports for {year}-{month:02d} ({len(filtered_users_for_reports)} users)")
+            print(f"   📄 Admin report: {admin_csv}")
+            print(f"✅ Generated all reports for {year}-{month:02d} ({len(filtered_users_for_reports)} users)")
 
     except Exception as e:
-        print(f"? Report generation failed: {e}")
+        print(f"❌ Report generation failed: {e}")
         raise
 
 
@@ -794,18 +784,21 @@ def report_weekly(week_start: Optional[str], target_user: Optional[str], send_al
     
     try:
         if target_user:
-            # Generate report for specific user
+            # Generate report for specific user (no Slack sending unless --send-all-users)
             user_obj = _find_user_by_email_or_name(filtered_users, target_user)
             if user_obj:
                 weekly_data, overtime_data, weekly_report = _generate_user_weekly_report(
                     user_obj, week_start_date, week_end_date, aggregator, overtime_calc, report_gen,
                     toggl_service, timetastic_service, force_refresh
                 )
-                if user_obj.slack_user_id:
-                    slack_service.send_monthly_report(user_obj.email, weekly_report.to_dict())
-                    print(f"📤 Weekly report sent to {user_obj.display_name}")
-                else:
-                    print(f"✅ Weekly report generated for {user_obj.display_name} (no Slack ID)")
+                print(f"✅ Weekly report generated for {user_obj.display_name}")
+                if send_all_users and user_obj.slack_user_id:
+                    # Use slack_user_id directly instead of searching by email
+                    success = slack_service.send_dm(user_obj.slack_user_id, report_gen.format_user_report_summary(weekly_report))
+                    if success:
+                        print(f"📤 Weekly report sent to {user_obj.display_name}")
+                    else:
+                        print(f"⚠️ Failed to send weekly report to {user_obj.display_name}")
             else:
                 print(f"❌ User {target_user} not found or has no data for this week")
         
@@ -848,41 +841,36 @@ def report_weekly(week_start: Optional[str], target_user: Optional[str], send_al
             print(f"✅ Bulk weekly reporting finished: {successes} sent, {failures} failed")
         
         else:
-            # Generate reports for all users and send via Slack
-            print(f"📤 Generating weekly reports for {len(filtered_users)} users...")
-            failures = 0
-            successes = 0
-            
+            # Generate reports for all users (no Slack sending unless --send-all-users)
+            print(f"📊 Generating weekly reports for {len(filtered_users)} users...")
             for user_obj in filtered_users:
-                user_label = user_obj.display_name or user_obj.email
                 try:
                     weekly_data, overtime_data, weekly_report = _generate_user_weekly_report(
                         user_obj, week_start_date, week_end_date, aggregator, overtime_calc, report_gen,
                         toggl_service, timetastic_service, force_refresh
                     )
+                    print(f"   ✅ Weekly report generated for {user_obj.display_name}")
                     
-                    slack_user_id = user_obj.slack_user_id
-                    if not slack_user_id:
-                        failures += 1
-                        print(f"   ⚠️ Slack user not found for {user_obj.email}; skipped sending.")
-                        continue
-                    try:
-                        success = slack_service.send_dm(slack_user_id, report_gen.format_user_report_summary(weekly_report))
-                    except Exception as exc:
-                        success = False
-                        print(f"   ⚠️ Slack send exception for {user_label}: {exc}")
-                    status = "sent" if success else "failed"
-                    if success:
-                        successes += 1
-                    else:
-                        failures += 1
-                    print(f"   📤 Slack report {status} for {user_label}")
+                    if send_all_users:
+                        slack_user_id = user_obj.slack_user_id
+                        if not slack_user_id:
+                            print(f"   ⚠️ Slack user not found for {user_obj.email}; skipped sending.")
+                            continue
+                        try:
+                            success = slack_service.send_dm(slack_user_id, report_gen.format_user_report_summary(weekly_report))
+                        except Exception as exc:
+                            success = False
+                            print(f"   ⚠️ Slack send exception for {user_obj.display_name}: {exc}")
+                        status = "sent" if success else "failed"
+                        print(f"   📤 Slack report {status} for {user_obj.display_name}")
                 except Exception as exc:
-                    failures += 1
-                    print(f"   ❌ Failed to build report for {user_label}: {exc}")
+                    print(f"   ❌ Failed to build report for {user_obj.display_name}: {exc}")
                     continue
             
-            print(f"✅ Bulk weekly reporting finished: {successes} sent, {failures} failed")
+            if send_all_users:
+                print(f"✅ Generated and sent weekly reports for {week_start_date} to {week_end_date}")
+            else:
+                print(f"✅ Generated weekly reports for {week_start_date} to {week_end_date} (use --send-all-users to send via Slack)")
     
     except Exception as e:
         print(f"❌ Weekly report generation failed: {e}")

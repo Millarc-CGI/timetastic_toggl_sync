@@ -36,6 +36,7 @@ class ReportGenerator:
             for project, tasks in (user_data.get('project_task_hours') or {}).items()
         }
         missing_days = user_data.get('missing_days', [])
+        no_project_entries_count = user_data.get('no_project_entries_count', 0)
         
         if not period_label and year and month:
             period_label = f"{year}-{month:02d}"
@@ -54,6 +55,7 @@ class ReportGenerator:
             projects_worked=list(project_hours.keys()),
             project_tasks=project_tasks,
             missing_days=missing_days,
+            no_project_entries_count=no_project_entries_count,
             generated_at=datetime.now()
         )
 
@@ -206,6 +208,15 @@ class ReportGenerator:
             if report.report_type in {"weekly", "monthly"}:
                 scope = "this past week" if report.report_type == "weekly" else "last month"
                 lines.append(f"⚠️ Please update Toggl for the missing days above so we can close {scope} on time.")
+                lines.append("")
+        
+        # Reminder about entries without project
+        if report.has_no_project_entries:
+            lines.append("⚠️ Entries Without Project:")
+            lines.append(f"  • Found {report.no_project_entries_count} time entry/entries without assigned project")
+            lines.append("")
+            if report.report_type in {"weekly", "monthly"}:
+                lines.append("⚠️ Please assign projects to your time entries so we can properly track project work.")
                 lines.append("")
         
         return "\n".join(lines)

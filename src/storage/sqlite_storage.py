@@ -601,7 +601,6 @@ class SQLiteStorage:
                         ))
                 
                 conn.commit()
-                print(f"   [DEBUG] Save Public Holidays: Successfully saved {len(public_holidays)} public holidays for {len(user_email_map)} users")
                 return True
         except Exception as e:
             print(f"Error saving absences: {e}")
