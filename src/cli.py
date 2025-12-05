@@ -6,14 +6,16 @@ import os
 import sys
 import click
 from datetime import datetime, date, timedelta
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
+from pathlib import Path
 
 from .config import load_settings
 from .services import TogglService, TimetasticService, SlackService, UserService
 from .storage import SQLiteStorage, FileStorage
-from .logic import DataAggregator, OvertimeCalculator, ReportGenerator
+from .logic import DataAggregator, OvertimeCalculator, ReportGenerator, StatisticsGenerator
 from .access_control import PermissionManager
 from .models.user import User
+from .models.project import Project
 
 
 @click.group(help="Timetastic-Toggl Sync CLI - Automated time tracking integration")
@@ -368,7 +370,9 @@ def sync_users():
 @click.option("--refresh-cache", is_flag=True, default=False, help="Refresh the target month's data from Toggl/Timetastic before generating reports")
 @click.option("--force-refresh", is_flag=True, default=False, help="Force reprocessing of statistics even if cached results exist")
 @click.option("--refresh-projects", is_flag=True, default=False, help="Force refresh projects cache before generating reports")
-def report_monthly(year: Optional[int], month: Optional[int], target_user: Optional[str], role: Optional[str], send_all_users: bool, refresh_cache: bool, force_refresh: bool, refresh_projects: bool):
+@click.option("--proj-stats", is_flag=True, default=False, help="Generate monthly project statistics with project overtime")
+@click.option("--send-proj-stats", is_flag=True, default=False, help="Send project statistics report to producers via Slack")
+def report_monthly(year: Optional[int], month: Optional[int], target_user: Optional[str], role: Optional[str], send_all_users: bool, refresh_cache: bool, force_refresh: bool, refresh_projects: bool, proj_stats: bool, send_proj_stats: bool):
     """Generate monthly reports."""
     settings = load_settings()
 
@@ -411,6 +415,7 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
         aggregator = DataAggregator(settings)
         overtime_calc = OvertimeCalculator(settings)
         report_gen = ReportGenerator(settings)
+        stats_gen = StatisticsGenerator(settings)
 
         if users is None:
             users = storage.get_all_users()
@@ -548,6 +553,27 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
                 
                 xlsx_file = file_storage.export_admin_report_xlsx(admin_reports, year, month)
                 print(f"📄 Admin report exported to: {xlsx_file}")
+                
+                # Generate monthly project statistics if requested
+                if proj_stats:
+                    print("📊 Generating monthly project statistics...")
+                    monthly_project_stats = stats_gen.generate_user_project_task_stats(
+                        all_user_data,
+                        filtered_users_for_admin,
+                        all_overtime_data
+                    )
+                    
+                    if monthly_project_stats:
+                        project_stats_file = file_storage.export_monthly_project_stats_xlsx(
+                            monthly_project_stats, year, month
+                        )
+                        print(f"   📄 Monthly project statistics: {project_stats_file}")
+                        
+                        # Send to producers if requested
+                        if send_proj_stats:
+                            _send_project_stats_to_producers(settings, project_stats_file, year, month)
+                    else:
+                        print("   ⚠️ No project statistics data found")
 
         else:
             print("📊 Generating all report types...")
@@ -599,6 +625,28 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
             
             admin_xlsx = file_storage.export_admin_report_xlsx(admin_reports, year, month)
             print(f"   📄 Admin report: {admin_xlsx}")
+            
+            # Generate monthly project statistics if requested
+            if proj_stats:
+                print("📊 Generating monthly project statistics...")
+                monthly_project_stats = stats_gen.generate_user_project_task_stats(
+                    all_user_data,
+                    filtered_users_for_reports,
+                    all_overtime_data
+                )
+                
+                if monthly_project_stats:
+                    project_stats_file = file_storage.export_monthly_project_stats_xlsx(
+                        monthly_project_stats, year, month
+                    )
+                    print(f"   📄 Monthly project statistics: {project_stats_file}")
+                    
+                    # Send to producers if requested
+                    if send_proj_stats:
+                        _send_project_stats_to_producers(settings, project_stats_file, year, month)
+                else:
+                    print("   ⚠️ No project statistics data found")
+            
             print(f"✅ Generated all reports for {year}-{month:02d} ({len(filtered_users_for_reports)} users)")
 
     except Exception as e:
@@ -1027,6 +1075,30 @@ def send_reminders(days: int):
         raise
 
 
+def _send_project_stats_to_producers(settings, file_path: Path, year: int, month: int):
+    """Helper function to send project stats report to producers."""
+    slack_service = SlackService(settings) if settings.send_monthly_reports else None
+    if not slack_service:
+        print("❌ Slack service not available. Check SEND_MONTHLY_REPORTS setting.")
+        return
+    
+    if not settings.producer_emails:
+        print("⚠️ No producer emails found in PRODUCER_EMAILS")
+        return
+    
+    print(f"📤 Sending project stats report to {len(settings.producer_emails)} producer(s)...")
+    success_count = 0
+    for producer_email in settings.producer_emails:
+        print(f"   🔍 Checking producer: {producer_email}")
+        success = slack_service.send_project_stats_report(str(producer_email), str(file_path), year, month)
+        status = "✅ sent" if success else "❌ failed"
+        print(f"      {status} to {producer_email}")
+        if success:
+            success_count += 1
+    
+    print(f"✅ Sent project stats report to {success_count}/{len(settings.producer_emails)} producer(s)")
+
+
 @cli.command()
 @click.option("--year", type=int, help="Year (defaults to previous month)")
 @click.option("--month", type=int, help="Month 1-12 (defaults to previous month)")
@@ -1082,6 +1154,60 @@ def send_admin_report(year: Optional[int], month: Optional[int]):
 
 
 @cli.command()
+@click.option("--year", type=int, help="Year (defaults to previous month)")
+@click.option("--month", type=int, help="Month 1-12 (defaults to previous month)")
+def send_proj_stats(year: Optional[int], month: Optional[int]):
+    """Send project statistics report to producers via Slack."""
+    settings = load_settings()
+    
+    # Determine target month
+    if not year or not month:
+        today = date.today()
+        first_this = today.replace(day=1)
+        last_prev = first_this - timedelta(days=1)
+        year, month = last_prev.year, last_prev.month
+    
+    print(f"📤 Sending project stats report for {year}-{month:02d} to producers...")
+    
+    try:
+        # Initialize services
+        slack_service = SlackService(settings) if settings.send_monthly_reports else None
+        if not slack_service:
+            print("❌ Slack service not available. Check SEND_MONTHLY_REPORTS setting.")
+            return
+        
+        file_storage = FileStorage(settings)
+        project_stats_path = file_storage._get_role_file_path("project_stats", year, month, "xlsx")
+        
+        # Check if file exists
+        if not project_stats_path.exists():
+            print(f"❌ Project stats report file not found: {project_stats_path}")
+            print(f"   Please generate the report first using: report-monthly --proj-stats")
+            return
+        
+        # Send to all producers
+        if not settings.producer_emails:
+            print("⚠️ No producer emails found in PRODUCER_EMAILS")
+            return
+        
+        print(f"📤 Sending project stats report to {len(settings.producer_emails)} producer(s)...")
+        success_count = 0
+        for producer_email in settings.producer_emails:
+            print(f"   🔍 Checking producer: {producer_email}")
+            success = slack_service.send_project_stats_report(str(producer_email), str(project_stats_path), year, month)
+            status = "✅ sent" if success else "❌ failed"
+            print(f"      {status} to {producer_email}")
+            if success:
+                success_count += 1
+        
+        print(f"✅ Sent project stats report to {success_count}/{len(settings.producer_emails)} producer(s)")
+    
+    except Exception as e:
+        print(f"❌ Failed to send project stats report: {e}")
+        raise
+
+
+@cli.command()
 def test_slack():
     """Test Slack integration by sending a test message."""
     settings = load_settings()
@@ -1103,6 +1229,390 @@ def test_slack():
     
     except Exception as e:
         print(f"❌ Slack test failed: {e}")
+
+
+def _get_active_projects(toggl_service: TogglService) -> List[Project]:
+    """Get list of active projects from Toggl."""
+    try:
+        projects_data = toggl_service.get_projects()
+        projects = []
+        for project_data in projects_data:
+            try:
+                project = Project.from_toggl(project_data)
+                if project.active:
+                    projects.append(project)
+            except Exception:
+                continue
+        return projects
+    except Exception as e:
+        print(f"⚠️ Failed to fetch projects: {e}")
+        return []
+
+
+def _ensure_project_cache(
+    settings,
+    toggl_service: TogglService,
+    timetastic_service: TimetasticService,
+    project_start_date: date,
+    end_date: date
+):
+    """Ensure cache exists for all months in project period."""
+    current = project_start_date.replace(day=1)
+    end_month = end_date.replace(day=1)
+    
+    months_to_cache = []
+    while current <= end_month:
+        year = current.year
+        month = current.month
+        months_to_cache.append((year, month))
+        
+        if month == 12:
+            current = current.replace(year=year + 1, month=1)
+        else:
+            current = current.replace(month=month + 1)
+    
+    for year, month in months_to_cache:
+        month_start = date(year, month, 1)
+        if month == 12:
+            month_end = date(year + 1, 1, 1) - timedelta(days=1)
+        else:
+            month_end = date(year, month + 1, 1) - timedelta(days=1)
+        
+        start_iso = f"{month_start}T00:00:00Z"
+        end_iso = f"{month_end}T23:59:59Z"
+        
+        try:
+            toggl_service.get_time_entries(start_iso, end_iso, force_refresh=False)
+            timetastic_service.get_holidays(start_iso, end_iso, force_refresh=False)
+        except Exception:
+            pass
+
+
+@cli.command()
+@click.option("--project-name", multiple=True, help="Project name(s) to generate stats for (can be specified multiple times)")
+@click.option("--start-date", help="Start date (YYYY-MM-DD, defaults to project first tracking date)")
+@click.option("--end-date", help="End date (YYYY-MM-DD, defaults to today)")
+@click.option("--refresh-cache", is_flag=True, default=False, help="Force refresh cache for project period")
+@click.option("--refresh-projects", is_flag=True, default=False, help="Force refresh projects cache")
+def report_project_stats(project_name: tuple, start_date: Optional[str], end_date: Optional[str], refresh_cache: bool, refresh_projects: bool):
+    """Generate project overtime statistics for selected projects."""
+    settings = load_settings()
+    
+    print("📊 Generating project overtime statistics...")
+    
+    try:
+        # Initialize services
+        storage = SQLiteStorage(settings)
+        toggl_service = TogglService(settings, storage=storage)
+        timetastic_service = TimetasticService(settings, storage=storage)
+        
+        # Refresh projects cache if requested
+        if refresh_projects:
+            print("🔄 Refreshing projects cache...")
+            toggl_service.get_projects(force_refresh=True)
+        
+        # Get active projects
+        active_projects = _get_active_projects(toggl_service)
+        if not active_projects:
+            print("❌ No active projects found")
+            return
+        
+        # Select projects
+        selected_projects: List[Project] = []
+        project_names_list = list(project_name) if project_name else []
+        
+        if not project_names_list:
+            # Interactive selection
+            print("\n📋 Available active projects:")
+            for idx, proj in enumerate(active_projects, start=1):
+                print(f"   {idx}. {proj.name} (ID: {proj.project_id})")
+            
+            response = input("\nEnter project names or numbers (comma-separated, or 'all' for all projects): ").strip()
+            if response.lower() == 'all':
+                selected_projects = active_projects
+            else:
+                tokens = [t.strip() for t in response.split(",")]
+                for token in tokens:
+                    # Try as number first
+                    try:
+                        idx = int(token) - 1
+                        if 0 <= idx < len(active_projects):
+                            selected_projects.append(active_projects[idx])
+                            continue
+                    except ValueError:
+                        pass
+                    
+                    # Try as name
+                    normalized_token = token.lower().strip()
+                    for proj in active_projects:
+                        if proj.name.lower().strip() == normalized_token:
+                            selected_projects.append(proj)
+                            break
+        else:
+            # Use provided project names
+            normalized_names = {name.lower().strip() for name in project_names_list}
+            for proj in active_projects:
+                if proj.name.lower().strip() in normalized_names:
+                    selected_projects.append(proj)
+        
+        if not selected_projects:
+            print("❌ No projects selected")
+            return
+        
+        print(f"\n✅ Selected {len(selected_projects)} project(s):")
+        for proj in selected_projects:
+            print(f"   • {proj.name}")
+        
+        # Parse dates
+        end_date_obj = date.today()
+        if end_date:
+            try:
+                end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
+            except ValueError:
+                print(f"❌ Invalid end date format: {end_date}. Use YYYY-MM-DD")
+                return
+        
+        # Get users
+        users = storage.get_all_users()
+        if not users:
+            print("❌ No users found. Run 'sync-users' first.")
+            return
+        
+        # Filter eligible users
+        excluded_emails = settings.excluded_report_emails
+        eligible_users = [
+            u for u in users
+            if u.toggl_user_id and u.email and u.email.lower() not in excluded_emails
+        ]
+        
+        if not eligible_users:
+            print("❌ No eligible users found")
+            return
+        
+        # Initialize logic components
+        aggregator = DataAggregator(settings)
+        overtime_calc = OvertimeCalculator(settings)
+        stats_gen = StatisticsGenerator(settings)
+        file_storage = FileStorage(settings)
+        
+        # Process each project
+        projects_data: Dict[str, List[Dict[str, Any]]] = {}
+        project_info: Dict[str, Dict[str, Any]] = {}  # project_name -> {start_date, first_tracking_date}
+        
+        for project in selected_projects:
+            project_name_display = project.name
+            print(f"\n📈 Processing project: {project_name_display} (ID: {project.project_id})")
+            
+            # Find first tracking date
+            first_tracking_date = toggl_service.get_project_first_tracking_date(
+                project=project
+            )
+            
+            if not first_tracking_date:
+                if project.start_date:
+                    first_tracking_date = project.start_date
+                else:
+                    continue
+            
+            print(f"   ✅ First tracking date: {first_tracking_date}")
+            
+            # Determine date range
+            start_date_obj = first_tracking_date
+            if start_date:
+                try:
+                    user_start = datetime.strptime(start_date, "%Y-%m-%d").date()
+                    if user_start > first_tracking_date:
+                        start_date_obj = user_start
+                except ValueError:
+                    pass
+            
+            if start_date_obj > end_date_obj:
+                continue
+            
+            # Ensure cache for project period
+            if refresh_cache:
+                _sync_range(settings, start_date_obj, end_date_obj, "project_stats_refresh")
+            else:
+                _ensure_project_cache(settings, toggl_service, timetastic_service, start_date_obj, end_date_obj)
+            
+            # Generate monthly sequence
+            months_sequence = []
+            current = start_date_obj.replace(day=1)
+            end_month = end_date_obj.replace(day=1)
+            while current <= end_month:
+                months_sequence.append((current.year, current.month))
+                if current.month == 12:
+                    current = current.replace(year=current.year + 1, month=1)
+                else:
+                    current = current.replace(month=current.month + 1)
+            
+            print(f"   📅 Processing {len(months_sequence)} month(s)...")
+            
+            # Aggregate data for all months
+            all_user_data: Dict[str, Dict[str, Any]] = {}
+            all_overtime_data: Dict[str, Dict[str, Any]] = {}
+            user_project_entries_all: Dict[str, List] = {}  # user_email -> list of project entries
+            
+            for year, month in months_sequence:
+                month_start = date(year, month, 1)
+                if month == 12:
+                    month_end = date(year + 1, 1, 1) - timedelta(days=1)
+                else:
+                    month_end = date(year, month + 1, 1) - timedelta(days=1)
+                
+                # Skip if outside project range
+                if month_end < start_date_obj or month_start > end_date_obj:
+                    continue
+                
+                start_iso = f"{month_start}T00:00:00Z"
+                end_iso = f"{month_end}T23:59:59Z"
+                
+                # Get time entries and absences for all users
+                all_time_entries = toggl_service.get_time_entries(start_iso, end_iso)
+                all_absences = timetastic_service.get_holidays(start_iso, end_iso)
+                
+                # Filter entries for this project
+                project_entries = [
+                    te for te in all_time_entries
+                    if (project.project_id and te.project_id == project.project_id) or
+                       (te.project_name and te.project_name.lower().strip() == project_name_display.lower().strip())
+                ]
+                
+                # Process each user
+                users_with_data = 0
+                for user in eligible_users:
+                    user_email = user.email.lower()
+                    
+                    # Filter entries for this user
+                    user_time_entries = [
+                        te for te in all_time_entries
+                        if te.user_id == user.toggl_user_id
+                    ]
+                    
+                    # Filter project entries for this user
+                    user_project_entries = [
+                        te for te in project_entries
+                        if te.user_id == user.toggl_user_id
+                    ]
+                    
+                    if user_project_entries:
+                        users_with_data += 1
+                        # Store entries for calculating first/last entry dates
+                        if user_email not in user_project_entries_all:
+                            user_project_entries_all[user_email] = []
+                        user_project_entries_all[user_email].extend(user_project_entries)
+                    
+                    # Filter absences for this user
+                    timetastic_user_id = user.timetastic_user_id if user.timetastic_user_id else None
+                    user_absences = [
+                        abs for abs in all_absences
+                        if timetastic_user_id and abs.user_id == timetastic_user_id
+                    ]
+                    
+                    # Aggregate monthly data
+                    monthly_data = aggregator.aggregate_monthly(
+                        user_email, year, month, user_time_entries, user_absences
+                    )
+                    
+                    # Calculate overtime
+                    daily_data = monthly_data.get("daily_data", [])
+                    overtime_data = overtime_calc.calculate_user_overtime(
+                        user_email, year, month, daily_data
+                    )
+                    
+                    # Merge into combined data
+                    if user_email not in all_user_data:
+                        all_user_data[user_email] = {
+                            'daily_data': [],
+                            'project_hours': {},
+                            'project_task_hours': {},
+                            'total_hours': 0.0,
+                        }
+                    
+                    combined = all_user_data[user_email]
+                    combined['daily_data'].extend(daily_data)
+                    combined['total_hours'] += monthly_data.get('total_hours', 0.0)
+                    
+                    # Merge project hours
+                    for proj_name, hours in (monthly_data.get('project_hours') or {}).items():
+                        combined['project_hours'][proj_name] = combined['project_hours'].get(proj_name, 0.0) + hours
+                    
+                    # Merge project task hours
+                    for proj_name, tasks in (monthly_data.get('project_task_hours') or {}).items():
+                        if proj_name not in combined['project_task_hours']:
+                            combined['project_task_hours'][proj_name] = {}
+                        for task_name, task_hours in tasks.items():
+                            combined['project_task_hours'][proj_name][task_name] = \
+                                combined['project_task_hours'][proj_name].get(task_name, 0.0) + task_hours
+                    
+                    # Merge overtime data
+                    if user_email not in all_overtime_data:
+                        all_overtime_data[user_email] = {'daily_breakdown': []}
+                    all_overtime_data[user_email]['daily_breakdown'].extend(
+                        overtime_data.get('daily_breakdown', [])
+                    )
+            
+            # Generate project-specific statistics
+            project_stats = stats_gen.generate_project_specific_stats(
+                all_user_data,
+                eligible_users,
+                all_overtime_data,
+                project_name=project_name_display,
+                start_date=start_date_obj,
+                end_date=end_date_obj,
+            )
+            
+            # Calculate first and last entry dates per user
+            user_entry_dates: Dict[str, Dict[str, Optional[date]]] = {}
+            for user_email, entries in user_project_entries_all.items():
+                if entries:
+                    entry_dates = [e.date for e in entries]
+                    user_entry_dates[user_email] = {
+                        'first_entry': min(entry_dates),
+                        'last_entry': max(entry_dates)
+                    }
+                else:
+                    user_entry_dates[user_email] = {
+                        'first_entry': None,
+                        'last_entry': None
+                    }
+            
+            # Add entry dates to project stats
+            for stat in project_stats:
+                user_email = stat.get('user_email', '').lower()
+                if user_email in user_entry_dates:
+                    stat['first_entry'] = user_entry_dates[user_email]['first_entry']
+                    stat['last_entry'] = user_entry_dates[user_email]['last_entry']
+            
+            if project_stats:
+                projects_data[project_name_display] = project_stats
+                # Store project info
+                project_info[project_name_display] = {
+                    'start_date': project.start_date,
+                    'first_tracking_date': first_tracking_date
+                }
+                print(f"   ✅ Generated {len(project_stats)} row(s) for {project_name_display}")
+            else:
+                print(f"   ⚠️ No data found for {project_name_display}")
+        
+        # Export to XLSX
+        if projects_data:
+            # Generate filename
+            if len(selected_projects) == 1:
+                project_name_safe = selected_projects[0].name.replace("/", "_").replace("\\", "_").replace(":", "_")
+                filename = f"project_{project_name_safe}_{end_date_obj.year}-{end_date_obj.month:02d}.xlsx"
+            else:
+                filename = f"projects_{end_date_obj.year}-{end_date_obj.month:02d}.xlsx"
+            
+            export_path = file_storage.exports_dir / filename
+            stats_gen.export_project_overtime_xlsx(projects_data, export_path, project_info)
+            print(f"\n✅ Project statistics exported to: {export_path}")
+        else:
+            print("\n❌ No project data to export")
+    
+    except Exception as e:
+        print(f"❌ Project statistics generation failed: {e}")
+        raise
 
 
 if __name__ == "__main__":

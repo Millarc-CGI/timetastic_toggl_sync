@@ -352,3 +352,36 @@ If you're receiving this message, the Slack integration is working correctly.
             message=message,
             title=f"Admin Report {year}-{month:02d}"
         )
+    
+    def send_project_stats_report(
+        self,
+        producer_email: str,
+        file_path: str,
+        year: int,
+        month: int
+    ) -> bool:
+        """Send project statistics report file to producer user."""
+        # Check if file exists
+        if not os.path.exists(file_path):
+            print(f"❌ Project stats report file not found: {file_path}")
+            return False
+        
+        # Find user by email
+        user = self.find_user_by_email(producer_email)
+        if not user:
+            print(f"⚠️ Producer user not found in Slack for email: {producer_email}")
+            return False
+        
+        user_id = user['id']
+        user_name = user.get('real_name') or user.get('name', 'Producer')
+        
+        message = f"📊 Monthly project statistics report ({year}-{month:02d}) is ready. You can download it below."
+        
+        print(f"📤 Sending project stats report to {user_name} ({producer_email}) - Slack ID: {user_id}")
+        
+        return self.send_file_dm(
+            user_id=user_id,
+            file_path=file_path,
+            message=message,
+            title=f"Project Statistics Report {year}-{month:02d}"
+        )

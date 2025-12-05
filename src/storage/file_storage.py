@@ -469,6 +469,99 @@ class FileStorage:
         
         return file_path
     
+    def export_monthly_project_stats_xlsx(
+        self,
+        records: List[Dict[str, Any]],
+        year: int,
+        month: int
+    ) -> Path:
+        """Export monthly project statistics to XLSX in monthly folder."""
+        file_path = self._get_role_file_path("project_stats", year, month, "xlsx")
+        
+        # Remove existing file if it exists to allow overwriting
+        if file_path.exists():
+            try:
+                os.chmod(file_path, 0o666)
+                file_path.unlink()
+            except (PermissionError, OSError):
+                pass
+        
+        headers = [
+            "User",
+            "Project",
+            "Tasks",
+            "Total Hours",
+            "Normal Overtime",
+            "Weekend Overtime",
+        ]
+        
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Project Stats"
+        
+        # Define styles
+        header_font = Font(bold=True, size=12, color="FFFFFF")
+        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        title_font = Font(bold=True, size=14)
+        center_align = Alignment(horizontal="center", vertical="center")
+        
+        row = 1
+        
+        # Title
+        sheet.merge_cells(f'A{row}:F{row}')
+        title_cell = sheet[f'A{row}']
+        title_cell.value = f'Monthly Project Statistics - {year}-{month:02d}'
+        title_cell.font = title_font
+        title_cell.alignment = center_align
+        row += 2
+        
+        # Add headers
+        for col_idx, header in enumerate(headers, start=1):
+            cell = sheet.cell(row=row, column=col_idx, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = center_align
+        row += 1
+        
+        # Add data rows
+        for record in records:
+            sheet.append([
+                record.get("user_name") or record.get("user_email"),
+                record.get("project"),
+                record.get("tasks_text") or record.get("task"),
+                round(record.get("total_hours", 0.0), 2),
+                round(record.get("normal_overtime", 0.0), 2),
+                round(record.get("weekend_overtime", 0.0), 2),
+            ])
+        
+        # Add summary row
+        if records:
+            summary_row = row
+            sheet.cell(row=summary_row, column=1, value="TOTAL").font = Font(bold=True)
+            sheet.cell(row=summary_row, column=4, value=round(
+                sum(r.get("total_hours", 0.0) for r in records), 2
+            )).font = Font(bold=True)
+            sheet.cell(row=summary_row, column=5, value=round(
+                sum(r.get("normal_overtime", 0.0) for r in records), 2
+            )).font = Font(bold=True)
+            sheet.cell(row=summary_row, column=6, value=round(
+                sum(r.get("weekend_overtime", 0.0) for r in records), 2
+            )).font = Font(bold=True)
+        
+        # Auto-size columns (30% wider)
+        for column_idx in range(1, len(headers) + 1):
+            column_letter = get_column_letter(column_idx)
+            max_length = 0
+            for cell in sheet[column_letter]:
+                if cell.value is None:
+                    continue
+                max_length = max(max_length, len(str(cell.value)))
+            base_width = min(max(max_length + 2, 12), 60)
+            sheet.column_dimensions[column_letter].width = base_width * 1.3
+        
+        workbook.save(file_path)
+        return file_path
+    
     # Utility methods
     def list_available_reports(self, year: int, month: int) -> Dict[str, List[Path]]:
         """List available report files for a given month."""

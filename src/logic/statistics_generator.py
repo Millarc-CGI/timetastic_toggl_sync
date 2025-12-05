@@ -610,6 +610,124 @@ class StatisticsGenerator:
 
         workbook.save(path)
         return str(path)
+    
+    def export_project_overtime_xlsx(
+        self,
+        projects_data: Dict[str, List[Dict[str, Any]]],
+        output_path: str | Path,
+        project_info: Optional[Dict[str, Dict[str, Any]]] = None
+    ) -> str:
+        """
+        Export project overtime statistics to XLSX with one sheet per project.
+        
+        Args:
+            projects_data: Dict mapping project_name -> list of user/project/task records
+            output_path: Path to save the XLSX file
+            project_info: Optional dict mapping project_name -> {start_date, first_tracking_date}
+        
+        Returns:
+            Path to saved file as string
+        """
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        headers = [
+            "User",
+            "Project",
+            "Tasks",
+            "Total Hours",
+            "Normal Overtime",
+            "Weekend Overtime",
+        ]
+
+        workbook = Workbook()
+        # Remove default sheet
+        if workbook.worksheets:
+            workbook.remove(workbook.worksheets[0])
+
+        # Create one sheet per project
+        for project_name, records in projects_data.items():
+            if not records:
+                continue
+            
+            # Create sheet with sanitized name (Excel sheet name limit: 31 chars)
+            sheet_name = project_name[:31] if len(project_name) <= 31 else project_name[:28] + "..."
+            sheet = workbook.create_sheet(title=sheet_name)
+            
+            # Add headers
+            for col_idx, header in enumerate(headers, start=1):
+                cell = sheet.cell(row=1, column=col_idx, value=header)
+                cell.font = Font(bold=True)
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            
+            # Add data rows
+            for record in records:
+                sheet.append([
+                    record.get("user_name") or record.get("user_email"),
+                    record.get("project"),
+                    record.get("tasks_text") or record.get("task"),
+                    round(record.get("total_hours", 0.0), 2),
+                    round(record.get("normal_overtime", 0.0), 2),
+                    round(record.get("weekend_overtime", 0.0), 2),
+                ])
+            
+            # Add summary row
+            if records:
+                summary_row = len(records) + 2
+                sheet.cell(row=summary_row, column=1, value="TOTAL").font = Font(bold=True)
+                sheet.cell(row=summary_row, column=4, value=round(
+                    sum(r.get("total_hours", 0.0) for r in records), 2
+                )).font = Font(bold=True)
+                sheet.cell(row=summary_row, column=5, value=round(
+                    sum(r.get("normal_overtime", 0.0) for r in records), 2
+                )).font = Font(bold=True)
+                sheet.cell(row=summary_row, column=6, value=round(
+                    sum(r.get("weekend_overtime", 0.0) for r in records), 2
+                )).font = Font(bold=True)
+                
+                # Add project info if provided
+                if project_info and project_name in project_info:
+                    info = project_info[project_name]
+                    info_row = summary_row + 1
+                    
+                    # Calculate first and last entry dates from all records
+                    first_entry_dates = [r.get("first_entry") for r in records if r.get("first_entry")]
+                    last_entry_dates = [r.get("last_entry") for r in records if r.get("last_entry")]
+                    
+                    project_first_entry = min(first_entry_dates) if first_entry_dates else None
+                    project_last_entry = max(last_entry_dates) if last_entry_dates else None
+                    
+                    # Project Start Date (from Toggl)
+                    if info.get('start_date'):
+                        sheet.cell(row=info_row, column=1, value="Project Start Date:").font = Font(italic=True)
+                        sheet.cell(row=info_row, column=2, value=info['start_date'].isoformat())
+                        info_row += 1
+                    
+                    # Project first entry (earliest tracking date from all users)
+                    if project_first_entry:
+                        sheet.cell(row=info_row, column=1, value="Project first entry:").font = Font(italic=True)
+                        sheet.cell(row=info_row, column=2, value=project_first_entry.isoformat())
+                        info_row += 1
+                    
+                    # Project last entry (latest tracking date from all users)
+                    if project_last_entry:
+                        sheet.cell(row=info_row, column=1, value="Project last entry:").font = Font(italic=True)
+                        sheet.cell(row=info_row, column=2, value=project_last_entry.isoformat())
+            
+            # Auto-size columns (30% wider)
+            for column_idx in range(1, len(headers) + 1):
+                column_letter = get_column_letter(column_idx)
+                max_length = 0
+                for cell in sheet[column_letter]:
+                    if cell.value is None:
+                        continue
+                    max_length = max(max_length, len(str(cell.value)))
+                # Increase width by 30%
+                base_width = min(max(max_length + 2, 12), 60)
+                sheet.column_dimensions[column_letter].width = base_width * 1.3
+
+        workbook.save(path)
+        return str(path)
 
     def _build_user_project_task_rows(
         self,

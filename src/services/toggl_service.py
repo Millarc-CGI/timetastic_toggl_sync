@@ -12,6 +12,7 @@ from datetime import datetime, date, timedelta
 
 from ..config import Settings
 from ..models.time_entry import TimeEntry
+from ..models.project import Project
 from ..logic.date_ranges import last_week_range, last_month_range, current_week_range, current_month_to_date_range
 
 
@@ -873,3 +874,118 @@ class TogglService:
             return None
         except Exception:
             return None
+    
+    def get_project_first_tracking_date(
+        self,
+        project: Project,
+        workspace_id: Optional[int] = None
+    ) -> Optional[date]:
+        """
+        Find the first date when project was tracked (earliest time entry for the project).
+        Uses project.start_date and searches from (start_date - 1 month) to today.
+        Cache is created per month for the entire period.
+        
+        Args:
+            project: Project object with start_date
+            workspace_id: Workspace ID (defaults to settings.workspace_id)
+        
+        Returns:
+            Date of first tracking or None if not found
+        """
+        workspace = workspace_id or self.workspace_id
+        if not workspace:
+            return None
+        
+        # Get project start_date, if not available use created_at or default to 1 year ago
+        project_start = project.start_date
+        if not project_start and project.created_at:
+            project_start = project.created_at.date()
+        
+        if not project_start:
+            # Fallback: search last year
+            today = date.today()
+            project_start = today.replace(year=today.year - 1, month=1, day=1)
+        
+        # Calculate search period: (start_date - 1 month) to today
+        search_start = project_start
+        if search_start.month == 1:
+            search_start = search_start.replace(year=search_start.year - 1, month=12)
+        else:
+            search_start = search_start.replace(month=search_start.month - 1)
+        
+        today = date.today()
+        search_end = today
+        
+        # Generate monthly sequence for caching
+        months_to_search = []
+        current = search_start.replace(day=1)
+        end_month = search_end.replace(day=1)
+        while current <= end_month:
+            months_to_search.append((current.year, current.month))
+            if current.month == 12:
+                current = current.replace(year=current.year + 1, month=1)
+            else:
+                current = current.replace(month=current.month + 1)
+        
+        # Fetch time entries month by month (this ensures cache is created per month)
+        all_entries = []
+        earliest_date = None
+        matching_entries_count = 0
+        
+        for year, month in months_to_search:
+            month_start = date(year, month, 1)
+            if month == 12:
+                month_end = date(year + 1, 1, 1) - timedelta(days=1)
+            else:
+                month_end = date(year, month + 1, 1) - timedelta(days=1)
+            
+            # Adjust first and last month to match search period
+            if month_start < search_start:
+                month_start = search_start
+            if month_end > search_end:
+                month_end = search_end
+            
+            start_iso = f"{month_start}T00:00:00Z"
+            end_iso = f"{month_end}T23:59:59Z"
+            
+            try:
+                # Fetch entries for this month (will use cache if available, create if not)
+                month_entries = self.get_time_entries(start_iso, end_iso, workspace_id=workspace, force_refresh=False)
+                all_entries.extend(month_entries)
+            except Exception:
+                continue
+        
+        if not all_entries:
+            return None
+        
+        # Find earliest entry for the project
+        for entry in all_entries:
+            matched = False
+            
+            # Match by project_id
+            if project.project_id is not None and entry.project_id == project.project_id:
+                entry_date = entry.date
+                matching_entries_count += 1
+                if earliest_date is None or entry_date < earliest_date:
+                    earliest_date = entry_date
+                matched = True
+                continue
+            
+            # Match by project_name if not matched by ID
+            if not matched and project.name:
+                normalized_search = self._normalize_project_name(project.name)
+                entry_project_name = entry.project_name or ""
+                normalized_entry = self._normalize_project_name(entry_project_name)
+                if normalized_search == normalized_entry:
+                    entry_date = entry.date
+                    matching_entries_count += 1
+                    if earliest_date is None or entry_date < earliest_date:
+                        earliest_date = entry_date
+                    matched = True
+        
+        return earliest_date
+    
+    @staticmethod
+    def _normalize_project_name(name: Optional[str]) -> str:
+        """Normalize project name for comparison."""
+        return (name or "").strip().lower()
