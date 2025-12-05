@@ -358,7 +358,8 @@ If you're receiving this message, the Slack integration is working correctly.
         producer_email: str,
         file_path: str,
         year: int,
-        month: int
+        month: int,
+        project_name: Optional[str] = None
     ) -> bool:
         """Send project statistics report file to producer user."""
         # Check if file exists
@@ -375,7 +376,27 @@ If you're receiving this message, the Slack integration is working correctly.
         user_id = user['id']
         user_name = user.get('real_name') or user.get('name', 'Producer')
         
-        message = f"📊 Monthly project statistics report ({year}-{month:02d}) is ready. You can download it below."
+        # Determine report type and extract project name from filename if not provided
+        file_name = os.path.basename(file_path)
+        if file_name.startswith("project_") and not file_name.startswith("project_stats_"):
+            # Project-specific report (e.g., "project_ProjectName_2025-12.xlsx")
+            if not project_name:
+                # Extract project name from filename: "project_ProjectName_2025-12.xlsx" -> "ProjectName"
+                parts = file_name.replace(".xlsx", "").split("_")
+                if len(parts) >= 2:
+                    project_name = "_".join(parts[1:-1])  # Everything between "project" and date
+                    project_name = project_name.replace("_", " ")  # Replace underscores with spaces
+            
+            if project_name:
+                message = f"📊 Project statistics report for *{project_name}* is ready. You can download it below."
+                title = f"Project Statistics Report - {project_name}"
+            else:
+                message = f"📊 Project statistics report is ready. You can download it below."
+                title = f"Project Statistics Report"
+        else:
+            # Monthly project statistics report (e.g., "project_stats_2025-12.xlsx")
+            message = f"📊 Monthly project statistics report ({year}-{month:02d}) is ready. You can download it below."
+            title = f"Monthly Project Statistics Report {year}-{month:02d}"
         
         print(f"📤 Sending project stats report to {user_name} ({producer_email}) - Slack ID: {user_id}")
         
@@ -383,5 +404,5 @@ If you're receiving this message, the Slack integration is working correctly.
             user_id=user_id,
             file_path=file_path,
             message=message,
-            title=f"Project Statistics Report {year}-{month:02d}"
+            title=title
         )

@@ -1075,7 +1075,7 @@ def send_reminders(days: int):
         raise
 
 
-def _send_project_stats_to_producers(settings, file_path: Path, year: int, month: int):
+def _send_project_stats_to_producers(settings, file_path: Path, year: int, month: int, project_name: Optional[str] = None):
     """Helper function to send project stats report to producers."""
     slack_service = SlackService(settings) if settings.send_monthly_reports else None
     if not slack_service:
@@ -1090,7 +1090,7 @@ def _send_project_stats_to_producers(settings, file_path: Path, year: int, month
     success_count = 0
     for producer_email in settings.producer_emails:
         print(f"   🔍 Checking producer: {producer_email}")
-        success = slack_service.send_project_stats_report(str(producer_email), str(file_path), year, month)
+        success = slack_service.send_project_stats_report(str(producer_email), str(file_path), year, month, project_name)
         status = "✅ sent" if success else "❌ failed"
         print(f"      {status} to {producer_email}")
         if success:
@@ -1294,7 +1294,8 @@ def _ensure_project_cache(
 @click.option("--end-date", help="End date (YYYY-MM-DD, defaults to today)")
 @click.option("--refresh-cache", is_flag=True, default=False, help="Force refresh cache for project period")
 @click.option("--refresh-projects", is_flag=True, default=False, help="Force refresh projects cache")
-def report_project_stats(project_name: tuple, start_date: Optional[str], end_date: Optional[str], refresh_cache: bool, refresh_projects: bool):
+@click.option("--send-to-producers", is_flag=True, default=False, help="Send project statistics report to producers via Slack")
+def report_project_stats(project_name: tuple, start_date: Optional[str], end_date: Optional[str], refresh_cache: bool, refresh_projects: bool, send_to_producers: bool):
     """Generate project overtime statistics for selected projects."""
     settings = load_settings()
     
@@ -1607,6 +1608,17 @@ def report_project_stats(project_name: tuple, start_date: Optional[str], end_dat
             export_path = file_storage.exports_dir / filename
             stats_gen.export_project_overtime_xlsx(projects_data, export_path, project_info)
             print(f"\n✅ Project statistics exported to: {export_path}")
+            
+            # Send to producers if requested
+            if send_to_producers:
+                # Extract project name(s) for message
+                if len(selected_projects) == 1:
+                    project_name_for_message = selected_projects[0].name
+                elif len(selected_projects) > 1:
+                    project_name_for_message = f"{len(selected_projects)} projects"
+                else:
+                    project_name_for_message = None
+                _send_project_stats_to_producers(settings, export_path, end_date_obj.year, end_date_obj.month, project_name_for_message)
         else:
             print("\n❌ No project data to export")
     

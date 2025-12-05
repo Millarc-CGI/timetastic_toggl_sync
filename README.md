@@ -208,6 +208,14 @@ python -m src.cli send-admin-report --year 2025 --month 11
 # Send project statistics report to producers via Slack (requires generated project stats)
 python -m src.cli send-proj-stats
 python -m src.cli send-proj-stats --year 2025 --month 11
+
+# Generate project-specific statistics (project overtime)
+python -m src.cli report-project-stats
+python -m src.cli report-project-stats --project-name "Project Name"
+python -m src.cli report-project-stats --project-name "Project 1" --project-name "Project 2"
+python -m src.cli report-project-stats --project-name "Project Name" --start-date 2025-10-01 --end-date 2025-12-31
+python -m src.cli report-project-stats --project-name "Project Name" --send-to-producers  # Generate and send to producers
+python -m src.cli report-project-stats --refresh-cache  # Force refresh cache for project period
 ```
 
 #### Notifications
@@ -263,6 +271,7 @@ python -m src.tests.timetastic_test
 - Cost estimation (if hourly rates configured)
 - Project efficiency metrics
 - Monthly project statistics with project overtime (`--proj-stats`)
+- Project-specific statistics with project overtime (`report-project-stats` command)
 - Automatic Slack delivery via `send-proj-stats` command
 
 ### Admin Reports
