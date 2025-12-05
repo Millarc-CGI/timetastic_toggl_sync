@@ -193,6 +193,10 @@ python -m src.cli report-weekly --user "John Doe"
 python -m src.cli report-monthly --send-all-users
 python -m src.cli report-weekly --send-all-users
 
+# Generate monthly project statistics with project overtime
+python -m src.cli report-monthly --proj-stats
+python -m src.cli report-monthly --proj-stats --send-proj-stats  # Generate and send to producers
+
 # Refresh cache before generating reports
 python -m src.cli report-monthly --send-all-users --refresh-cache
 python -m src.cli report-weekly --refresh-projects
@@ -200,6 +204,10 @@ python -m src.cli report-weekly --refresh-projects
 # Send admin report to admins via Slack (requires generated admin report)
 python -m src.cli send-admin-report
 python -m src.cli send-admin-report --year 2025 --month 11
+
+# Send project statistics report to producers via Slack (requires generated project stats)
+python -m src.cli send-proj-stats
+python -m src.cli send-proj-stats --year 2025 --month 11
 ```
 
 #### Notifications
@@ -254,6 +262,8 @@ python -m src.tests.timetastic_test
 - User contributions per project
 - Cost estimation (if hourly rates configured)
 - Project efficiency metrics
+- Monthly project statistics with project overtime (`--proj-stats`)
+- Automatic Slack delivery via `send-proj-stats` command
 
 ### Admin Reports
 - Complete organizational overview with all user statistics
@@ -274,6 +284,7 @@ The system implements role-based access control:
 
 Reports are stored with role-specific naming:
 - `admin_YYYY-MM.xlsx` - Admin reports (XLSX format)
+- `project_stats_YYYY-MM.xlsx` - Monthly project statistics (XLSX format)
 - `user_email_YYYY-MM.xlsx` - Individual user reports (XLSX format)
 
 ## 📅 Automation & Scheduling
