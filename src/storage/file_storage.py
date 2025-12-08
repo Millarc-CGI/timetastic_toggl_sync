@@ -459,7 +459,7 @@ class FileStorage:
         ws.column_dimensions['E'].width = 18.2  # Expected Hours (14 * 1.3)
         ws.column_dimensions['F'].width = 20.8  # Monthly Overtime (16 * 1.3)
         ws.column_dimensions['G'].width = 23.4  # Weekend Overtime (18 * 1.3)
-        ws.column_dimensions['H'].width = 19.5  # Missing Time Entries (15 * 1.3, zwiększone dla lepszej czytelności)
+        ws.column_dimensions['H'].width = 19.5  # Missing Time Entries (15 * 1.3, increased for better readability)
         
         # Freeze header row
         ws.freeze_panes = f'A{header_row + 1}'

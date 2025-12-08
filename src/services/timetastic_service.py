@@ -207,6 +207,7 @@ class TimetasticService:
         disk_cache_path: Optional[Path] = None
         raw_holidays: List[Dict[str, Any]] = []
         should_fetch = True
+        cache_info = {"used_cache": False, "cache_type": None}
         
         # Check cache metadata if cacheable and storage is available
         if cacheable and start_obj and end_obj and self.storage:
@@ -266,7 +267,7 @@ class TimetasticService:
             cached = self._holidays_cache.get(cache_key)
             if cached is not None:
                 raw_holidays = cached
-                print(f"   [DEBUG TimetasticCache] Using in-memory cache: {len(raw_holidays)} holidays ({start_obj} to {end_obj})")
+                print(f"   [DEBUG TimetasticCache] Using in-memory cache")
             else:
                 # Fetch holidays with pagination
                 print(f"   [DEBUG TimetasticCache] Fetching from API ({start_obj} to {end_obj})...")

@@ -21,4 +21,4 @@ async def slack_handler(req: Request):
     form = await req.form()
     command = form.get("command")
     text = form.get("text")
-    return {"response_type": "ephemeral", "text": f"Otrzymałem {command} z tekstem: {text}"}
+    return {"response_type": "ephemeral", "text": f"Received {command} with text: {text}"}

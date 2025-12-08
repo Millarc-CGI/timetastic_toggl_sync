@@ -95,7 +95,7 @@ class DataAggregator:
         project_hours_by_id = defaultdict(float)
         project_task_hours_by_id = defaultdict(lambda: defaultdict(float))
         project_names_by_id: Dict[int, str] = {}
-        # Szczegółowe informacje o projektach i taskach z ID
+        # Detailed information about projects and tasks with IDs
         project_task_details = defaultdict(lambda: defaultdict(lambda: {'task_id': None, 'hours': 0.0}))
         
         for entry in day_entries:
@@ -112,7 +112,7 @@ class DataAggregator:
                 project_task_hours_by_id[project_id][task_name] += entry.duration_hours
                 project_names_by_id[project_id] = project_name
                 
-                # Zbierz szczegóły z task_id
+                # Collect details with task_id
                 if task_name not in project_task_details[project_id]:
                     project_task_details[project_id][task_name] = {
                         'task_id': task_id,

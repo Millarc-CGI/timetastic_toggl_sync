@@ -85,7 +85,7 @@ class OvertimeCalculator:
             is_actual_weekend = day_data.get('is_actual_weekend', is_effective_weekend)
             is_public_holiday = day_data.get('is_public_holiday', False)
 
-            # Przygotuj szczegóły projektów i tasków
+            # Prepare project and task details
             project_task_details = day_data.get('project_task_details', {})
             project_names_by_id = day_data.get('project_names_by_id', {})
             projects_info = []
