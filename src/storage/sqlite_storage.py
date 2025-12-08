@@ -353,6 +353,30 @@ class SQLiteStorage:
             last_sync_at=last_sync_at
         )
     
+    def _resolve_email(
+        self, 
+        cursor, 
+        user_id: Optional[int], 
+        user_email: Optional[str], 
+        cache: Dict[int, str], 
+        id_column: str
+    ) -> Optional[str]:
+        """Resolve and normalize user email from id or direct value."""
+        email = (user_email or "").strip().lower()
+        if not email and user_id:
+            if user_id in cache:
+                email = cache[user_id]
+            else:
+                cursor.execute(
+                    f"SELECT email FROM users WHERE {id_column} = ? LIMIT 1",
+                    (user_id,),
+                )
+                row = cursor.fetchone()
+                if row and row[0]:
+                    email = (row[0] or "").strip().lower()
+                    cache[user_id] = email
+        return email or None
+    
     # Time entries methods
     def save_time_entries(self, entries: List[TimeEntry]) -> bool:
         """Save time entries to database."""
@@ -362,21 +386,13 @@ class SQLiteStorage:
                 email_cache: Dict[int, str] = {}
                 
                 for entry in entries:
-                    email = (entry.user_email or "").strip().lower()
-                    if not email and entry.user_id:
-                        # Look up email via toggl_user_id if missing from payload
-                        if entry.user_id in email_cache:
-                            email = email_cache[entry.user_id]
-                        else:
-                            cursor.execute(
-                                "SELECT email FROM users WHERE toggl_user_id = ? LIMIT 1",
-                                (entry.user_id,),
-                            )
-                            row = cursor.fetchone()
-                            if row and row[0]:
-                                email = (row[0] or "").strip().lower()
-                                email_cache[entry.user_id] = email
-                    entry.user_email = email or None
+                    entry.user_email = self._resolve_email(
+                        cursor, 
+                        entry.user_id, 
+                        entry.user_email, 
+                        email_cache, 
+                        "toggl_user_id"
+                    )
 
                     cursor.execute("""
                         INSERT OR REPLACE INTO time_entries 
@@ -552,25 +568,15 @@ class SQLiteStorage:
                 all_users = cursor.fetchall()
                 user_email_map = {user_id: email.lower() for email, user_id in all_users if user_id}
                 
-                print(f"   [DEBUG] Save Public Holidays: Found {len(public_holidays)} public holidays, assigning to {len(user_email_map)} users")
-                
                 # Save regular absences
                 for absence in regular_absences:
-                    email = (absence.user_email or "").strip().lower()
-                    if not email and absence.user_id:
-                        # Look up email via timetastic_user_id if missing from payload
-                        if absence.user_id in email_cache:
-                            email = email_cache[absence.user_id]
-                        else:
-                            cursor.execute(
-                                "SELECT email FROM users WHERE timetastic_user_id = ? LIMIT 1",
-                                (absence.user_id,),
-                            )
-                            row = cursor.fetchone()
-                            if row and row[0]:
-                                email = (row[0] or "").strip().lower()
-                                email_cache[absence.user_id] = email
-                    absence.user_email = email or None
+                    absence.user_email = self._resolve_email(
+                        cursor,
+                        absence.user_id,
+                        absence.user_email,
+                        email_cache,
+                        "timetastic_user_id"
+                    )
 
                     cursor.execute("""
                         INSERT OR REPLACE INTO absences 
@@ -636,7 +642,6 @@ class SQLiteStorage:
         end_date: Optional[date] = None
     ) -> List[Absence]:
         """Get absences for user within date range, including public holidays (which are now assigned to users)."""
-        print(f"   [DEBUG Storage.get_absences_for_user] Called for user_email={user_email}, start_date={start_date}, end_date={end_date}")
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -655,26 +660,10 @@ class SQLiteStorage:
                 
                 query += " ORDER BY start_date"
                 
-                print(f"   [DEBUG Storage.get_absences_for_user] Executing query: {query} with params: {params}")
                 cursor.execute(query, params)
                 rows = cursor.fetchall()
                 
-                print(f"   [DEBUG Storage.get_absences_for_user] Found {len(rows)} rows from database")
-                
                 absences = [self._row_to_absence(row) for row in rows]
-                
-                # Count public holidays
-                public_holidays_count = sum(1 for abs in absences if (abs.notes or "").strip().startswith("Public holiday:"))
-                regular_count = len(absences) - public_holidays_count
-                
-                print(f"   [DEBUG Storage.get_absences_for_user] Parsed {len(absences)} absences ({regular_count} regular + {public_holidays_count} public holidays)")
-                
-                if absences:
-                    print(f"   [DEBUG Storage.get_absences_for_user] Sample absences (first 5):")
-                    for abs in absences[:5]:
-                        print(f"      {abs.start_date} to {abs.end_date} | type={abs.absence_type} | status={abs.status} | user_email={abs.user_email} | notes={abs.notes[:50] if abs.notes else None}")
-                else:
-                    print(f"   [DEBUG Storage.get_absences_for_user] ⚠️ No absences found in SQLite for {user_email}")
                 
                 return absences
         except Exception as e:
