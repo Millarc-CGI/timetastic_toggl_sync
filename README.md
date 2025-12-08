@@ -226,10 +226,6 @@ python -m src.cli report-project-stats --project-name "Project Name" --start-dat
 # Send admin report to admins via Slack (requires generated admin report)
 python -m src.cli send-admin-report
 python -m src.cli send-admin-report --year 2025 --month 11
-
-# Send project statistics report to producers via Slack (requires generated project stats)
-python -m src.cli send-proj-stats
-python -m src.cli send-proj-stats --year 2025 --month 11
 ```
 
 > **Note:** Cache is automatically refreshed based on TTL (7 days for previous month, 30 days for older months). No manual cache refresh flags are needed.
@@ -240,9 +236,6 @@ python -m src.cli send-proj-stats --year 2025 --month 11
 # Only sends reminders to users who have missing entries
 python -m src.cli send-reminders
 python -m src.cli send-reminders --days 14  # Check last 14 days
-
-# Test Slack integration
-python -m src.cli test-slack
 ```
 
 #### Data Export
@@ -422,7 +415,7 @@ When ready for a web interface, the recommended tech stack is:
 3. **Slack Notification Failures**:
    - Verify bot token and permissions
    - Check if users are in the workspace
-   - Test with `test-slack` command
+   - Test connections with `ping` command
 
 4. **Report Generation Errors**:
    - Ensure data is synced first

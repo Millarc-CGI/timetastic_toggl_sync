@@ -116,25 +116,6 @@ def _sync_range(settings, start_date: date, end_date: date, sync_type: str = "ma
         raise
 
 
-
-
-def _sync_users_and_cache(settings):
-    """Refresh user mappings from services and persist them for reporting."""
-    user_service = UserService(settings)
-    storage = SQLiteStorage(settings)
-
-    print("🔄 Refreshing user mappings before reporting...")
-    users = user_service.sync_users_from_services()
-    saved = 0
-    for user in users:
-        if storage.save_user(user):
-            saved += 1
-
-    # Removed debug logs - stats calculation kept for potential future use
-    stats = user_service.get_user_statistics(users)
-    return users
-
-
 def _find_user_by_email_or_name(users: List[User], search_term: str) -> Optional[User]:
     """Find user by email or by full name (case-insensitive)."""
     search_lower = search_term.lower().strip()
@@ -1163,80 +1144,6 @@ def send_admin_report(year: Optional[int], month: Optional[int]):
     except Exception as e:
         print(f"❌ Failed to send admin report: {e}")
         raise
-
-
-@cli.command()
-@click.option("--year", type=int, help="Year (defaults to previous month)")
-@click.option("--month", type=int, help="Month 1-12 (defaults to previous month)")
-def send_proj_stats(year: Optional[int], month: Optional[int]):
-    """Send project statistics report to producers via Slack."""
-    settings = load_settings()
-    
-    # Resolve month parameters using helper
-    year, month, _, _ = _resolve_month_params(year, month)
-    
-    print(f"📤 Sending project stats report for {year}-{month:02d} to producers...")
-    
-    try:
-        # Initialize services
-        slack_service = SlackService(settings) if settings.send_monthly_reports else None
-        if not slack_service:
-            print("❌ Slack service not available. Check SEND_MONTHLY_REPORTS setting.")
-            return
-        
-        file_storage = FileStorage(settings)
-        project_stats_path = file_storage._get_role_file_path("project_stats", year, month, "xlsx")
-        
-        # Check if file exists
-        if not project_stats_path.exists():
-            print(f"❌ Project stats report file not found: {project_stats_path}")
-            print(f"   Please generate the report first using: report-monthly --proj-stats")
-            return
-        
-        # Send to all producers
-        if not settings.producer_emails:
-            print("⚠️ No producer emails found in PRODUCER_EMAILS")
-            return
-        
-        print(f"📤 Sending project stats report to {len(settings.producer_emails)} producer(s)...")
-        success_count = 0
-        for producer_email in settings.producer_emails:
-            print(f"   🔍 Checking producer: {producer_email}")
-            success = slack_service.send_project_stats_report(str(producer_email), str(project_stats_path), year, month)
-            status = "✅ sent" if success else "❌ failed"
-            print(f"      {status} to {producer_email}")
-            if success:
-                success_count += 1
-        
-        print(f"✅ Sent project stats report to {success_count}/{len(settings.producer_emails)} producer(s)")
-    
-    except Exception as e:
-        print(f"❌ Failed to send project stats report: {e}")
-        raise
-
-
-@cli.command()
-def test_slack():
-    """Test Slack integration by sending a test message."""
-    settings = load_settings()
-    
-    if not settings.slack_test_user_id:
-        print("❌ SLACK_TEST_USER_ID not set in configuration")
-        return
-    
-    print(f"🧪 Testing Slack integration with user {settings.slack_test_user_id}...")
-    
-    try:
-        slack_service = SlackService(settings)
-        success = slack_service.send_test_message(settings.slack_test_user_id)
-        
-        if success:
-            print("✅ Test message sent successfully!")
-        else:
-            print("❌ Failed to send test message")
-    
-    except Exception as e:
-        print(f"❌ Slack test failed: {e}")
 
 
 def _get_active_projects(toggl_service: TogglService) -> List[Project]:
