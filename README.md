@@ -166,41 +166,63 @@ python -m src.cli status
 ```
 
 #### Reporting
+
+**Monthly Reports:**
 ```bash
-# Generate all monthly reports (previous month)
-python -m src.cli report-monthly
+# Generate reports for all users (previous month)
+python -m src.cli report-monthly --target all
 
-# Generate weekly reports (last week, Monday to Sunday)
-python -m src.cli report-weekly
-
-# Generate weekly report for specific week
-python -m src.cli report-weekly --week-start 2025-11-25
-
-# Generate reports for specific month
-python -m src.cli report-monthly --year 2025 --month 10
+# Generate reports for all users + send via Slack
+python -m src.cli report-monthly --target all --send
 
 # Generate admin report only
-python -m src.cli report-monthly --role admin
+python -m src.cli report-monthly --target admin
 
-# Generate producer report only
-python -m src.cli report-monthly --role producer
+# Generate admin report + send via Slack
+python -m src.cli report-monthly --target admin --send
+
+# Generate project statistics (production) + send via Slack
+python -m src.cli report-monthly --target production --send
 
 # Generate report for specific user (by email or full name)
-python -m src.cli report-monthly --user user@company.com
-python -m src.cli report-weekly --user "John Doe"
+python -m src.cli report-monthly --target-user user@company.com
+python -m src.cli report-monthly --target-user "John Doe"
 
-# Generate + Slack-send reports for every user
-python -m src.cli report-monthly --send-all-users
-python -m src.cli report-weekly --send-all-users
+# Generate reports for specific month
+python -m src.cli report-monthly --year 2025 --month 10 --target all
+python -m src.cli report-monthly --year 2025 --month 10 --target admin --send
+```
 
-# Generate monthly project statistics with project overtime
-python -m src.cli report-monthly --proj-stats
-python -m src.cli report-monthly --proj-stats --send-proj-stats  # Generate and send to producers
+**Weekly Reports:**
+```bash
+# Generate weekly reports for all users (last week, Monday to Sunday)
+python -m src.cli report-weekly --target all
 
-# Refresh cache before generating reports
-python -m src.cli report-monthly --send-all-users --refresh-cache
-python -m src.cli report-weekly --refresh-projects
+# Generate weekly reports for all users + send via Slack
+python -m src.cli report-weekly --target all --send
 
+# Generate weekly report for specific week
+python -m src.cli report-weekly --week-start 2025-11-25 --target all
+
+# Generate report for specific user
+python -m src.cli report-weekly --target-user "John Doe"
+```
+
+**Project Statistics:**
+```bash
+# Generate project-specific statistics (interactive selection)
+python -m src.cli report-project-stats
+
+# Generate statistics for specific project(s) + send to producers
+python -m src.cli report-project-stats --project-name "Project Name" --target production --send
+python -m src.cli report-project-stats --project-name "Project 1" --project-name "Project 2" --target production --send
+
+# Generate statistics with custom date range
+python -m src.cli report-project-stats --project-name "Project Name" --start-date 2025-10-01 --end-date 2025-12-31 --target production --send
+```
+
+**Additional Commands:**
+```bash
 # Send admin report to admins via Slack (requires generated admin report)
 python -m src.cli send-admin-report
 python -m src.cli send-admin-report --year 2025 --month 11
@@ -208,15 +230,9 @@ python -m src.cli send-admin-report --year 2025 --month 11
 # Send project statistics report to producers via Slack (requires generated project stats)
 python -m src.cli send-proj-stats
 python -m src.cli send-proj-stats --year 2025 --month 11
-
-# Generate project-specific statistics (project overtime)
-python -m src.cli report-project-stats
-python -m src.cli report-project-stats --project-name "Project Name"
-python -m src.cli report-project-stats --project-name "Project 1" --project-name "Project 2"
-python -m src.cli report-project-stats --project-name "Project Name" --start-date 2025-10-01 --end-date 2025-12-31
-python -m src.cli report-project-stats --project-name "Project Name" --send-to-producers  # Generate and send to producers
-python -m src.cli report-project-stats --refresh-cache  # Force refresh cache for project period
 ```
+
+> **Note:** Cache is automatically refreshed based on TTL (7 days for previous month, 30 days for older months). No manual cache refresh flags are needed.
 
 #### Notifications
 ```bash
@@ -270,9 +286,9 @@ python -m src.tests.timetastic_test
 - User contributions per project
 - Cost estimation (if hourly rates configured)
 - Project efficiency metrics
-- Monthly project statistics with project overtime (`--proj-stats`)
-- Project-specific statistics with project overtime (`report-project-stats` command)
-- Automatic Slack delivery via `send-proj-stats` command
+- Monthly project statistics with project overtime (`--target production`)
+- Project-specific statistics with project overtime (`report-project-stats --target production`)
+- Automatic Slack delivery via `--send` flag with `--target production`
 
 ### Admin Reports
 - Complete organizational overview with all user statistics
@@ -316,7 +332,21 @@ Set up automated daily synchronization using cron (Linux/Mac) or Task Scheduler 
 ### Monthly Reports
 ```bash
 # Monthly report generation (1st of each month at 8 AM)
-0 8 1 * * cd /path/to/project && python -m src.cli report-monthly
+# Generate reports for all users + send via Slack
+0 8 1 * * cd /path/to/project && python -m src.cli report-monthly --target all --send
+
+# Generate admin report + send via Slack
+0 8 1 * * cd /path/to/project && python -m src.cli report-monthly --target admin --send
+
+# Generate project statistics + send to producers
+0 8 1 * * cd /path/to/project && python -m src.cli report-monthly --target production --send
+```
+
+### Weekly Reports
+```bash
+# Weekly report generation (every Monday at 9 AM)
+# Generate reports for all users + send via Slack
+0 9 * * 1 cd /path/to/project && python -m src.cli report-weekly --target all --send
 ```
 
 ## 🗄️ Data Storage
