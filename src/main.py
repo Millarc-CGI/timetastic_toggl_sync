@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request, HTTPException
 import hmac, hashlib, time
 from .config import load_settings
+
 settings = load_settings()
 app = FastAPI()
 
