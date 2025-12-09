@@ -444,3 +444,6 @@ For support and questions:
 - Review the configuration documentation
 - Test individual components using the test scripts
 - Check system logs for detailed error information
+
+
+[![CI Status](https://github.com/Millarc-CGI/timetastic_toggl_sync/actions/workflows/ci.yml/badge.svg)](https://github.com/Millarc-CGI/timetastic_toggl_sync/actions)
