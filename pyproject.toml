@@ -7,7 +7,7 @@ name = "timetastic_toggl_sync"
 version = "0.1.0-beta"
 
 [tool.pytest.ini_options]
-testpaths = ["src/tests"]
+# No testpaths configured - tests are excluded from repo
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
