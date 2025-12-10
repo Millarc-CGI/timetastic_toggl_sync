@@ -1,0 +1,97 @@
+name: Database Backup
+
+on:
+  # Manual trigger via GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      retention_days:
+        description: 'Retention period in days'
+        required: false
+        default: '90'
+        type: string
+  
+  # Scheduled backup (every Monday at 2 AM UTC)
+  schedule:
+    - cron: '0 2 * * 1'
+  
+  # External trigger via repository_dispatch (e.g., from Slack)
+  repository_dispatch:
+    types:
+      - backup-trigger
+
+jobs:
+  backup:
+    name: Backup Database
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+      
+      - name: Create backup directory
+        run: |
+          mkdir -p backups
+      
+      - name: Download database from NAS (if available)
+        continue-on-error: true
+        env:
+          NAS_USER: ${{ secrets.NAS_USER }}
+          NAS_PASS: ${{ secrets.NAS_PASS }}
+          NAS_PATH: ${{ secrets.NAS_PATH }}
+        run: |
+          # TODO: Implement NAS download when NAS is accessible
+          # For now, this step is skipped
+          echo "NAS download not yet configured - skipping"
+      
+      - name: Run backup script
+        env:
+          DATABASE_PATH: ${{ secrets.DATABASE_PATH || './data/sync.db' }}
+        run: |
+          RETENTION_DAYS="${{ github.event.inputs.retention_days || '90' }}"
+          python scripts/backup_db.py \
+            --backup-dir ./backups \
+            --retention-days "$RETENTION_DAYS" \
+            --no-sql
+      
+      - name: Upload backup to GitHub Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: database-backup-${{ github.run_number }}
+          path: |
+            backups/*.db
+            backups/*.sha256
+          retention-days: 90
+          if-no-files-found: warn
+      
+      - name: Upload to NAS (if available)
+        continue-on-error: true
+        env:
+          NAS_USER: ${{ secrets.NAS_USER }}
+          NAS_PASS: ${{ secrets.NAS_PASS }}
+          NAS_PATH: ${{ secrets.NAS_PATH }}
+        run: |
+          # TODO: Implement NAS upload when NAS is accessible
+          # For now, this step is skipped
+          echo "NAS upload not yet configured - skipping"
+          echo "Backups are available in GitHub Artifacts"
+      
+      - name: Backup summary
+        run: |
+          echo "## 📦 Backup Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Backup completed successfully" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Backup files:**" >> $GITHUB_STEP_SUMMARY
+          ls -lh backups/*.db 2>/dev/null | awk '{print "- " $9 " (" $5 ")"}' >> $GITHUB_STEP_SUMMARY || echo "- No backup files found" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Artifacts:** Available in [Actions artifacts](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+

@@ -15,6 +15,7 @@ build/
 # Local outputs
 exports/
 cache/
+backups/
 *.sqlite
 *.db
 PROGRESS.md
