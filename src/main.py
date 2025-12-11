@@ -4,9 +4,19 @@ import subprocess
 import threading
 from pathlib import Path
 from .config import load_settings
+from .services.slack_service import SlackService
 
 settings = load_settings()
 app = FastAPI()
+slack_service = SlackService(settings)
+
+
+def _normalize_email(email: str) -> str:
+    """Normalize email using alias map from settings."""
+    email_l = (email or "").strip().lower()
+    if not email_l:
+        return ""
+    return settings.email_aliases.get(email_l, email_l)
 
 
 def verify_slack_request(slack_signature, slack_timestamp, body):
@@ -27,6 +37,18 @@ async def project_handler(req: Request):
     headers = req.headers
     verify_slack_request(headers["x-slack-signature"], headers["x-slack-request-timestamp"], body.decode())
     form = await req.form()
+
+    user_id = form.get("user_id")
+    if not user_id:
+        return {"response_type": "ephemeral", "text": "❌ Nie udało się zweryfikować użytkownika Slack."}
+
+    slack_user = slack_service.get_user_info(user_id)
+    user_email = _normalize_email(slack_user.get("profile", {}).get("email", "") if slack_user else "")
+    if not user_email:
+        return {"response_type": "ephemeral", "text": "❌ Nie mogę ustalić Twojego e-maila w Slacku. Skontaktuj się z administratorem."}
+
+    if not (settings.is_producer(user_email) or settings.is_admin(user_email)):
+        return {"response_type": "ephemeral", "text": "⛔ Nie masz uprawnień do uruchamiania komendy"}
 
     project_name = (form.get("text") or "").strip()
 
