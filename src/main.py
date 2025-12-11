@@ -17,7 +17,7 @@ def verify_slack_request(slack_signature, slack_timestamp, body):
     if not hmac.compare_digest(my_signature, slack_signature):
         raise HTTPException(status_code=400, detail="Bad signature")
 
-@app.post("/project")
+@app.post("/slack")
 async def project_handler(req: Request):
     """
     Slack slash command handler for /project.
