@@ -188,10 +188,7 @@ python -m src.cli report-monthly --target production --send
 python -m src.cli report-monthly --target-user user@company.com
 python -m src.cli report-monthly --target-user "John Doe"
 
-# Generate reports for specific month
-python -m src.cli report-monthly --year 2025 --month 10 --target all
-python -m src.cli report-monthly --year 2025 --month 10 --target admin --send
-```
+
 
 **Weekly Reports:**
 ```bash
@@ -225,7 +222,7 @@ python -m src.cli report-project-stats --project-name "Project Name" --start-dat
 ```bash
 # Send admin report to admins via Slack (requires generated admin report)
 python -m src.cli send-admin-report
-python -m src.cli send-admin-report --year 2025 --month 11
+python -m src.cli send-admin-report --select-month 2025-11
 ```
 
 > **Note:** Cache is automatically refreshed based on TTL (7 days for previous month, 30 days for older months). No manual cache refresh flags are needed.
@@ -241,7 +238,7 @@ python -m src.cli send-reminders --days 14  # Check last 14 days
 #### Data Export
 ```bash
 # Export raw data for a specific month
-python -m src.cli export --year 2025 --month 10
+python -m src.cli export --select-month 2025-10
 ```
 
 ### Testing API Connections
@@ -262,7 +259,7 @@ python -m src.tests.timetastic_test
 ### Debug Scripts
 - `python -m src.tests.report_debug` – fetches data for the configured test user and prints weekly/monthly summaries (plus optional Slack delivery).
 - `python -m src.tests.report_debug --bulk` – reruns monthly report generation for all synced users and prints each user's hours, overtime, and missing entries.
-- `python -m src.tests.project_stats_debug --year 2025 --month 10 --limit 5` – aggregates workspace time entries, runs `StatisticsGenerator.generate_project_stats`, and prints the top projects for the selected month.
+- `python -m src.tests.project_stats_debug --select-month 2025-10 --limit 5` – aggregates workspace time entries, runs `StatisticsGenerator.generate_project_stats`, and prints the top projects for the selected month.
 
 ## 📊 Report Types
 
@@ -291,6 +288,8 @@ python -m src.tests.timetastic_test
 - Export to XLSX with formatted tables and wide columns
 - Slack delivery via `send-admin-report` command
 - SQLite storage in `admin_statistics` table
+- Main sheet columns: `Total Hours, Monthly Overtime, Weekend Overtime, Working Days, Missing Toggl Entries`; summary shows `Expected Hours (per user)`.
+- Per-user sheets added to the same admin workbook with compact table: `Date, Type (weekend/blank), Toggl Hours, Absences, Total Hours, Expected Hours, Overtime, Weekend Overtime, Missing Toggl Entries`.
 
 ## 🔐 Access Control
 
@@ -304,6 +303,8 @@ Reports are stored with role-specific naming:
 - `admin_YYYY-MM.xlsx` - Admin reports (XLSX format)
 - `project_stats_YYYY-MM.xlsx` - Monthly project statistics (XLSX format)
 - `user_email_YYYY-MM.xlsx` - Individual user reports (XLSX format)
+- `user_combined_database_YYYY-MM.xlsx` - Single workbook with one sheet per user
+- All month-based commands now use `--select-month YYYY-MM` (default: previous month): `report-monthly`, `send-admin-report`, `export`.
 
 ## 📅 Automation & Scheduling
 
@@ -333,6 +334,9 @@ Set up automated daily synchronization using cron (Linux/Mac) or Task Scheduler 
 
 # Generate project statistics + send to producers
 0 8 1 * * cd /path/to/project && python -m src.cli report-monthly --target production --send
+
+# Generate reports for a specific past month (override default previous month)
+python -m src.cli report-monthly --target all --select-month 2024-11
 ```
 
 ### Weekly Reports
@@ -353,6 +357,7 @@ Set up automated daily synchronization using cron (Linux/Mac) or Task Scheduler 
 - **Formats**: XLSX (formatted reports), JSON (raw data backup)
 - **Organization**: Role-based file naming and directory structure
 - **Features**: Formatted tables, wide columns, frozen headers, color-coded headers
+- Combined user workbook available as `user_combined_database_YYYY-MM.xlsx` (arkusze per user).
 
 ## 🔧 Customization
 

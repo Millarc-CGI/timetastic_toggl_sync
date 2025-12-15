@@ -81,7 +81,6 @@ class FileStorage:
         """Export user report (weekly or monthly) to XLSX with formatting."""
         file_path = self._get_user_file_path(report.user_email, report.year, report.month, "xlsx")
         
-        # Remove existing file if it exists to allow overwriting
         if file_path.exists():
             try:
                 os.chmod(file_path, 0o666)
@@ -89,12 +88,41 @@ class FileStorage:
             except (PermissionError, OSError):
                 pass
         
-        # Create workbook and worksheet
         wb = Workbook()
-        ws = wb.active
-        ws.title = f"{report.report_type.title()} Report"
+        self._build_user_report_sheet(wb, report, is_first_sheet=True)
+        wb.save(file_path)
+        return file_path
+
+    def export_user_reports_xlsx_combined(self, reports: List[UserReport]) -> Path:
+        """Export multiple user reports into a single XLSX (one sheet per user)."""
+        if not reports:
+            raise ValueError("No user reports provided for export.")
         
-        # Define styles
+        year = reports[0].year
+        month = reports[0].month
+        file_path = self._get_role_file_path("user_combined_database", year, month, "xlsx")
+        
+        if file_path.exists():
+            try:
+                os.chmod(file_path, 0o666)
+                file_path.unlink()
+            except (PermissionError, OSError):
+                pass
+        
+        wb = Workbook()
+        first = True
+        for report in reports:
+            self._build_user_report_sheet(wb, report, is_first_sheet=first)
+            first = False
+        wb.save(file_path)
+        return file_path
+
+    def _build_user_report_sheet(self, wb: Workbook, report: UserReport, is_first_sheet: bool = False):
+        """Build a worksheet for a single user report."""
+        sheet_title = self._generate_unique_sheet_name(wb, report.user_name or report.user_email or "User")
+        ws = wb.active if is_first_sheet else wb.create_sheet()
+        ws.title = sheet_title
+        
         header_font = Font(bold=True, size=12, color="FFFFFF")
         header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
         title_font = Font(bold=True, size=14)
@@ -111,7 +139,6 @@ class FileStorage:
         
         row = 1
         
-        # Title
         ws.merge_cells(f'A{row}:L{row}')
         title_cell = ws[f'A{row}']
         title_cell.value = f"{report.report_type.title()} User Report"
@@ -119,7 +146,6 @@ class FileStorage:
         title_cell.alignment = center_align
         row += 1
         
-        # User info
         ws[f'A{row}'] = 'User:'
         ws[f'B{row}'] = report.user_name
         row += 1
@@ -136,7 +162,6 @@ class FileStorage:
         ws[f'B{row}'] = report.generated_at.strftime("%Y-%m-%d %H:%M:%S") if report.generated_at else ''
         row += 2
         
-        # Totals section
         ws[f'A{row}'] = 'Totals'
         ws[f'A{row}'].font = section_font
         row += 1
@@ -159,7 +184,6 @@ class FileStorage:
         ws[f'B{row}'].alignment = right_align
         row += 2
         
-        # Projects Worked section
         if report.projects_worked:
             ws[f'A{row}'] = 'Projects Worked'
             ws[f'A{row}'].font = section_font
@@ -169,7 +193,6 @@ class FileStorage:
                 row += 1
             row += 1
         
-        # Missing Days section
         if report.missing_days:
             ws[f'A{row}'] = 'Missing Days'
             ws[f'A{row}'].font = section_font
@@ -179,14 +202,14 @@ class FileStorage:
                 row += 1
             row += 1
         
-        # Daily Overtime Breakdown table
+        breakdown_header_row = None
         if report.daily_breakdown:
             ws[f'A{row}'] = 'Daily Overtime Breakdown'
             ws[f'A{row}'].font = section_font
             row += 1
             
             headers = [
-                'Date', 'Type', 'Toggl Hours', 'Total Hours', 'Expected Hours', 'OT Hours',
+                'Date', 'Type', 'Toggl Hours', 'Absences', 'Total Hours', 'Expected Hours', 'Overtimes',
                 'Project', 'Project ID', 'Project Hours', 'Task', 'Task ID', 'Task Hours'
             ]
             
@@ -208,11 +231,12 @@ class FileStorage:
                     try:
                         date_obj = datetime.fromisoformat(date_str.replace('Z', '+00:00')).date()
                         date_str = date_obj.isoformat()
-                    except:
+                    except Exception:
                         pass
                 
                 entry_type = day_entry.get('type', '')
                 toggl_hours = day_entry.get('toggl_hours', 0.0)
+                absence_desc = day_entry.get('absence_desc') or ''
                 total_hours = day_entry.get('total_hours', 0.0)
                 expected_hours = day_entry.get('expected_hours', 0.0)
                 ot_hours = day_entry.get('hours', 0.0)
@@ -220,15 +244,13 @@ class FileStorage:
                 projects = day_entry.get('projects', [])
                 
                 if projects:
-                    # Calculate project hours (sum of all tasks for each project)
-                    project_hours_map = {}
+                    project_hours_map: Dict[Any, float] = {}
                     for project in projects:
                         project_id = project.get('project_id')
                         if project_id not in project_hours_map:
                             project_hours_map[project_id] = 0.0
                         project_hours_map[project_id] += project.get('hours', 0.0)
                     
-                    # Write one row per project/task
                     for project in projects:
                         project_id = project.get('project_id')
                         project_hours_total = project_hours_map.get(project_id, 0.0)
@@ -238,6 +260,7 @@ class FileStorage:
                             date_str,
                             entry_type,
                             toggl_hours,
+                            absence_desc,
                             total_hours,
                             expected_hours if expected_hours > 0 else None,
                             ot_hours,
@@ -254,25 +277,26 @@ class FileStorage:
                             cell.value = value
                             cell.border = thin_border
                             
-                            # Format numbers
-                            if col_idx in [3, 4, 5, 6, 9, 12]:  # Numeric columns
+                            if col_idx in [3, 5, 6, 7, 10, 13]:
                                 if value is not None:
                                     cell.number_format = '0.00'
                                     cell.alignment = right_align
                                 else:
                                     cell.alignment = right_align
-                            elif col_idx == 2:  # Type
+                            elif col_idx == 2:
                                 cell.alignment = center_align
+                            elif col_idx == 4:
+                                cell.alignment = left_align
                             else:
                                 cell.alignment = left_align
                         
                         row += 1
                 else:
-                    # No projects - write single row
                     data_row = [
                         date_str,
                         entry_type,
                         toggl_hours,
+                        absence_desc,
                         total_hours,
                         expected_hours if expected_hours > 0 else None,
                         ot_hours,
@@ -284,42 +308,54 @@ class FileStorage:
                         cell.value = value
                         cell.border = thin_border
                         
-                        # Format numbers
-                        if col_idx in [3, 4, 5, 6]:  # Numeric columns
+                        if col_idx in [3, 5, 6, 7]:
                             if value is not None:
                                 cell.number_format = '0.00'
                                 cell.alignment = right_align
                             else:
                                 cell.alignment = right_align
-                        elif col_idx == 2:  # Type
+                        elif col_idx == 2:
                             cell.alignment = center_align
+                        elif col_idx == 4:
+                            cell.alignment = left_align
                         else:
                             cell.alignment = left_align
                     
                     row += 1
         
-        # Set column widths (increased by 30% from reasonable defaults)
-        ws.column_dimensions['A'].width = 13.0  # Date (10 * 1.3)
-        ws.column_dimensions['B'].width = 10.4  # Type (8 * 1.3)
-        ws.column_dimensions['C'].width = 13.0  # Toggl Hours (10 * 1.3)
-        ws.column_dimensions['D'].width = 13.0  # Total Hours (10 * 1.3)
-        ws.column_dimensions['E'].width = 15.6  # Expected Hours (12 * 1.3)
-        ws.column_dimensions['F'].width = 11.7  # OT Hours (9 * 1.3)
-        ws.column_dimensions['G'].width = 26.0  # Project (20 * 1.3)
-        ws.column_dimensions['H'].width = 13.0  # Project ID (10 * 1.3)
-        ws.column_dimensions['I'].width = 15.6  # Project Hours (12 * 1.3)
-        ws.column_dimensions['J'].width = 26.0  # Task (20 * 1.3)
-        ws.column_dimensions['K'].width = 13.0  # Task ID (10 * 1.3)
-        ws.column_dimensions['L'].width = 13.0  # Task Hours (10 * 1.3)
+        ws.column_dimensions['A'].width = 13.0
+        ws.column_dimensions['B'].width = 10.4
+        ws.column_dimensions['C'].width = 13.0  # Toggl Hours
+        ws.column_dimensions['D'].width = 24.0  # Absences
+        ws.column_dimensions['E'].width = 13.0  # Total Hours
+        ws.column_dimensions['F'].width = 15.6  # Expected Hours
+        ws.column_dimensions['G'].width = 11.7  # Overtimes
+        ws.column_dimensions['H'].width = 26.0  # Project
+        ws.column_dimensions['I'].width = 13.0  # Project ID
+        ws.column_dimensions['J'].width = 15.6  # Project Hours
+        ws.column_dimensions['K'].width = 26.0  # Task
+        ws.column_dimensions['L'].width = 13.0  # Task ID
+        ws.column_dimensions['M'].width = 13.0  # Task Hours
         
-        # Freeze header row for breakdown table if it exists
-        if report.daily_breakdown:
+        if breakdown_header_row:
             ws.freeze_panes = f'A{breakdown_header_row + 1}'
+
+    @staticmethod
+    def _generate_unique_sheet_name(wb: Workbook, name: str) -> str:
+        """Ensure sheet name is valid, shortened to 31 chars, and unique."""
+        invalid_chars = set(r'[]:*?/\\')
+        base = ''.join(ch for ch in name if ch not in invalid_chars).strip() or "Sheet"
+        base = base[:31]
         
-        # Save workbook
-        wb.save(file_path)
-        
-        return file_path
+        sheet_name = base
+        counter = 1
+        existing = set(wb.sheetnames)
+        while sheet_name in existing or not sheet_name:
+            suffix = f"_{counter}"
+            trimmed_base = base[: max(0, 31 - len(suffix))]
+            sheet_name = f"{trimmed_base}{suffix}" if trimmed_base else f"Sheet_{counter}"
+            counter += 1
+        return sheet_name
     
     def export_admin_report_xlsx(self, reports: List[UserReport], year: int, month: int) -> Path:
         """Export admin report (summary of all users) to XLSX with formatting."""
@@ -378,6 +414,7 @@ class FileStorage:
         total_hours = sum(r.total_hours for r in reports)
         total_overtime = sum(max(0.0, r.monthly_overtime) for r in reports)
         total_weekend_overtime = sum(max(0.0, r.weekend_overtime) for r in reports)
+        expected_hours_per_user = reports[0].expected_hours if reports else 0.0
         
         ws[f'A{row}'] = 'Summary Statistics'
         ws[f'A{row}'].font = summary_font
@@ -385,6 +422,12 @@ class FileStorage:
         
         ws[f'A{row}'] = 'Total Hours (All Users)'
         ws[f'B{row}'] = total_hours
+        ws[f'B{row}'].number_format = '0.00'
+        ws[f'B{row}'].alignment = right_align
+        row += 1
+
+        ws[f'A{row}'] = 'Expected Hours (per user)'
+        ws[f'B{row}'] = expected_hours_per_user
         ws[f'B{row}'].number_format = '0.00'
         ws[f'B{row}'].alignment = right_align
         row += 1
@@ -404,7 +447,7 @@ class FileStorage:
         # User Details Table Header
         headers = [
             'User', 'Department', 'Period Label',
-            'Total Hours', 'Expected Hours', 'Monthly Overtime', 'Weekend Overtime', 'Missing Time Entries'
+            'Total Hours', 'Monthly Overtime', 'Weekend Overtime', 'Working Days', 'Missing Toggl Entries'
         ]
         
         header_row = row
@@ -423,15 +466,19 @@ class FileStorage:
             # Traktuj ujemne overtime jako 0
             monthly_ot = max(0.0, report.monthly_overtime)
             weekend_ot = max(0.0, report.weekend_overtime)
+            working_days = sum(
+                1 for day in (report.daily_breakdown or [])
+                if (day.get('toggl_hours') or 0.0) > 0
+            )
             
             data_row = [
                 report.user_name,
                 report.department or 'N/A',
                 report.period_label,
                 report.total_hours,
-                report.expected_hours,
                 monthly_ot,
                 weekend_ot,
+                working_days,
                 len(report.missing_days)
             ]
             
@@ -441,9 +488,11 @@ class FileStorage:
                 cell.border = thin_border
                 
                 # Format numbers
-                if col_idx in [4, 5, 6, 7]:  # Total Hours, Expected Hours, Monthly Overtime, Weekend Overtime
+                if col_idx in [4, 5, 6]:  # Total Hours, Monthly Overtime, Weekend Overtime
                     cell.number_format = '0.00'
                     cell.alignment = right_align
+                elif col_idx == 7:  # Working Days
+                    cell.alignment = center_align
                 elif col_idx == 8:  # Missing Days
                     cell.alignment = center_align
                 else:
@@ -456,13 +505,99 @@ class FileStorage:
         ws.column_dimensions['B'].width = 26.0  # Department (20 * 1.3)
         ws.column_dimensions['C'].width = 15.6  # Period Label (12 * 1.3)
         ws.column_dimensions['D'].width = 15.6  # Total Hours (12 * 1.3)
-        ws.column_dimensions['E'].width = 18.2  # Expected Hours (14 * 1.3)
-        ws.column_dimensions['F'].width = 20.8  # Monthly Overtime (16 * 1.3)
-        ws.column_dimensions['G'].width = 23.4  # Weekend Overtime (18 * 1.3)
-        ws.column_dimensions['H'].width = 19.5  # Missing Time Entries (15 * 1.3, increased for better readability)
+        ws.column_dimensions['E'].width = 20.8  # Monthly Overtime (16 * 1.3)
+        ws.column_dimensions['F'].width = 23.4  # Weekend Overtime (18 * 1.3)
+        ws.column_dimensions['G'].width = 16.0  # Working Days
+        ws.column_dimensions['H'].width = 19.5  # Missing Toggl Entries (15 * 1.3, increased for better readability)
         
         # Freeze header row
         ws.freeze_panes = f'A{header_row + 1}'
+        
+        # Per-user sheets with simplified daily breakdown
+        for report in sorted_reports:
+            sheet_name = self._generate_unique_sheet_name(wb, report.user_name or report.user_email or "User")
+            user_ws = wb.create_sheet(title=sheet_name)
+            
+            user_headers = [
+                'Date', 'Type', 'Toggl Hours', 'Absences', 'Total Hours',
+                'Expected Hours', 'Overtime', 'Weekend Overtime', 'Missing Toggl Entries'
+            ]
+            
+            # Header row
+            for col_idx, header in enumerate(user_headers, start=1):
+                cell = user_ws.cell(row=1, column=col_idx)
+                cell.value = header
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = center_align
+                cell.border = thin_border
+            
+            missing_set = {d.isoformat() for d in (report.missing_days or [])}
+            row_idx = 2
+            for day in report.daily_breakdown or []:
+                date_str = day.get('date')
+                if isinstance(date_str, date):
+                    date_str = date_str.isoformat()
+                elif isinstance(date_str, str):
+                    try:
+                        date_obj = datetime.fromisoformat(date_str.replace('Z', '+00:00')).date()
+                        date_str = date_obj.isoformat()
+                    except Exception:
+                        pass
+                
+                entry_type = day.get('type', '')
+                type_label = 'weekend' if entry_type == 'weekend' else ''
+                toggl_hours = day.get('toggl_hours', 0.0)
+                absences = day.get('absence_desc') or ''
+                total_hours = day.get('total_hours', 0.0)
+                expected_hours = day.get('expected_hours', 0.0) if entry_type != 'weekend' else None
+                ot_hours = day.get('hours', 0.0)
+                overtime = ot_hours if entry_type != 'weekend' else None
+                weekend_overtime = ot_hours if entry_type == 'weekend' else None
+                missing_flag = 1 if date_str in missing_set else ''
+                
+                data_row = [
+                    date_str,
+                    type_label,
+                    toggl_hours,
+                    absences,
+                    total_hours,
+                    expected_hours,
+                    overtime,
+                    weekend_overtime,
+                    missing_flag
+                ]
+                
+                for col_idx, value in enumerate(data_row, start=1):
+                    cell = user_ws.cell(row=row_idx, column=col_idx)
+                    cell.value = value
+                    cell.border = thin_border
+                    
+                    if col_idx in [3, 5, 6, 7, 8]:  # numeric columns
+                        if value not in (None, ''):
+                            cell.number_format = '0.00'
+                            cell.alignment = right_align
+                        else:
+                            cell.alignment = right_align
+                    elif col_idx == 2:
+                        cell.alignment = center_align
+                    else:
+                        cell.alignment = left_align
+                
+                row_idx += 1
+            
+            # Column widths
+            user_ws.column_dimensions['A'].width = 13.0
+            user_ws.column_dimensions['B'].width = 10.0
+            user_ws.column_dimensions['C'].width = 13.0
+            user_ws.column_dimensions['D'].width = 24.0
+            user_ws.column_dimensions['E'].width = 13.0
+            user_ws.column_dimensions['F'].width = 15.0
+            user_ws.column_dimensions['G'].width = 12.0
+            user_ws.column_dimensions['H'].width = 16.0
+            user_ws.column_dimensions['I'].width = 16.0
+            
+            user_ws.freeze_panes = "A2"
         
         # Save workbook
         wb.save(file_path)
@@ -536,17 +671,16 @@ class FileStorage:
         
         # Add summary row
         if records:
-            summary_row = row
+            summary_row = sheet.max_row + 1
+            total_hours = round(sum(r.get("total_hours", 0.0) for r in records), 2)
+            total_normal_ot = round(sum(r.get("normal_overtime", 0.0) for r in records), 2)
+            total_weekend_ot = round(sum(r.get("weekend_overtime", 0.0) for r in records), 2)
+
             sheet.cell(row=summary_row, column=1, value="TOTAL").font = Font(bold=True)
-            sheet.cell(row=summary_row, column=4, value=round(
-                sum(r.get("total_hours", 0.0) for r in records), 2
-            )).font = Font(bold=True)
-            sheet.cell(row=summary_row, column=5, value=round(
-                sum(r.get("normal_overtime", 0.0) for r in records), 2
-            )).font = Font(bold=True)
-            sheet.cell(row=summary_row, column=6, value=round(
-                sum(r.get("weekend_overtime", 0.0) for r in records), 2
-            )).font = Font(bold=True)
+            sheet.cell(row=summary_row, column=2, value="").font = Font(bold=True)
+            sheet.cell(row=summary_row, column=4, value=total_hours).font = Font(bold=True)
+            sheet.cell(row=summary_row, column=5, value=total_normal_ot).font = Font(bold=True)
+            sheet.cell(row=summary_row, column=6, value=total_weekend_ot).font = Font(bold=True)
         
         # Auto-size columns (30% wider)
         for column_idx in range(1, len(headers) + 1):

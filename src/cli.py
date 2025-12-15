@@ -510,18 +510,36 @@ def sync_users():
 
 
 @cli.command()
-@click.option("--year", type=int, help="Year (defaults to previous month)")
-@click.option("--month", type=int, help="Month 1-12 (defaults to previous month)")
+@click.option("--select-month", help="Override month in format YYYY-MM (previous month by default)")
 @click.option("--target-user", help="Generate report for specific user (email or full name)")
 @click.option("--target", type=click.Choice(['all', 'admin', 'production']), default='all',
               help="Target: all (user reports), admin (admin summary), production (project stats)")
 @click.option("--send", is_flag=True, default=False, help="Send reports via Slack after generation")
-def report_monthly(year: Optional[int], month: Optional[int], target_user: Optional[str], target: str, send: bool):
+def report_monthly(select_month: Optional[str], target_user: Optional[str], target: str, send: bool):
     """Generate monthly reports."""
     settings = load_settings()
 
-    # Resolve month parameters using helper
-    year, month, start_date, end_date = _resolve_month_params(year, month)
+    # Resolve month parameters using helper (default: previous full month)
+    if not select_month:
+        # default: previous month
+        today = date.today()
+        first_this = today.replace(day=1)
+        last_prev = first_this - timedelta(days=1)
+        select_month = f"{last_prev.year}-{last_prev.month:02d}"
+
+    try:
+        parsed = datetime.strptime(f"{select_month}-01", "%Y-%m-%d").date()
+        year = parsed.year
+        month = parsed.month
+        start_date = parsed.replace(day=1)
+        if month == 12:
+            end_date = date(year + 1, 1, 1) - timedelta(days=1)
+        else:
+            end_date = date(year, month + 1, 1) - timedelta(days=1)
+        print(f"📅 Using manually selected month: {year}-{month:02d}")
+    except ValueError:
+        print(f"❌ Invalid format for --select-month: {select_month}. Use YYYY-MM.")
+        return
 
     print(f"📊 Generating monthly reports for {year}-{month:02d}...")
 
@@ -593,14 +611,15 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
 
             failures = 0
             successes = 0
+            user_reports_combined = []
             for user_obj in eligible_users:
                 user_label = user_obj.display_name or user_obj.email
                 try:
                     monthly_data, overtime_data, user_report = _generate_user_monthly_report(
                         user_obj, start_date, end_date, aggregator, overtime_calc, report_gen, toggl_service, timetastic_service, storage, year, month
                     )
-                    xlsx_file = file_storage.export_user_report_xlsx(user_report)
-                    print(f"   📄 User report for {user_label}: {xlsx_file}")
+                    user_reports_combined.append(user_report)
+                    print(f"   📄 User report generated for {user_label}")
                 except Exception as exc:
                     failures += 1
                     print(f"   ❌ Failed to build report for {user_label}: {exc}")
@@ -623,6 +642,10 @@ def report_monthly(year: Optional[int], month: Optional[int], target_user: Optio
                         failures += 1
                     status = "sent" if success else "failed"
                     print(f"   📤 Slack report {status} for {user_label}")
+            
+            if user_reports_combined:
+                combined_path = file_storage.export_user_reports_xlsx_combined(user_reports_combined)
+                print(f"📄 Combined user workbook: {combined_path}")
 
             if send:
                 print(f"✅ Bulk Slack reporting finished: {successes} sent, {failures} failed")
@@ -862,18 +885,25 @@ def report_weekly(week_start: Optional[str], target_user: Optional[str], target:
 
 
 @cli.command()
-@click.option("--year", type=int, help="Year")
-@click.option("--month", type=int, help="Month")
-def export(year: Optional[int], month: Optional[int]):
+@click.option("--select-month", help="Month to export in format YYYY-MM")
+def export(select_month: Optional[str]):
     """Export data to various formats."""
     settings = load_settings()
     
-    if not year or not month:
+    if not select_month:
         # Default to previous month
         today = date.today()
         first_this = today.replace(day=1)
         last_prev = first_this - timedelta(days=1)
-        year, month = last_prev.year, last_prev.month
+        select_month = f"{last_prev.year}-{last_prev.month:02d}"
+
+    try:
+        parsed = datetime.strptime(f"{select_month}-01", "%Y-%m-%d").date()
+        year = parsed.year
+        month = parsed.month
+    except ValueError:
+        print(f"❌ Invalid format for --select-month: {select_month}. Use YYYY-MM.")
+        return
     
     print(f"📁 Exporting data for {year}-{month:02d}...")
     
@@ -1097,14 +1127,25 @@ def _send_project_stats_to_producers(settings, file_path: Path, year: int, month
 
 
 @cli.command()
-@click.option("--year", type=int, help="Year (defaults to previous month)")
-@click.option("--month", type=int, help="Month 1-12 (defaults to previous month)")
-def send_admin_report(year: Optional[int], month: Optional[int]):
+@click.option("--select-month", help="Month to send in format YYYY-MM (preferred)")
+def send_admin_report(select_month: Optional[str]):
     """Send admin report to admins via Slack."""
     settings = load_settings()
     
-    # Resolve month parameters using helper
-    year, month, _, _ = _resolve_month_params(year, month)
+    # Resolve month parameters (prefer --select-month)
+    if not select_month:
+        today = date.today()
+        first_this = today.replace(day=1)
+        last_prev = first_this - timedelta(days=1)
+        select_month = f"{last_prev.year}-{last_prev.month:02d}"
+
+    try:
+        parsed = datetime.strptime(f"{select_month}-01", "%Y-%m-%d").date()
+        year = parsed.year
+        month = parsed.month
+    except ValueError:
+        print(f"❌ Invalid format for --select-month: {select_month}. Use YYYY-MM.")
+        return
     
     print(f"📤 Sending admin report for {year}-{month:02d} to admins...")
     

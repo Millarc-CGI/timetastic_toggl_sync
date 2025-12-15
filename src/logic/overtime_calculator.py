@@ -81,6 +81,13 @@ class OvertimeCalculator:
         for day_data in daily_data:
             date_obj = day_data['date']
             total_hours = day_data.get('total_hours', 0.0)
+            absence_details = day_data.get('absence_details') or []
+            absence_hours = sum((item.get('hours') or 0.0) for item in absence_details)
+            absence_desc = ", ".join(
+                f"{item.get('absence_type')}={item.get('hours', 0.0):.1f}h"
+                for item in absence_details
+                if item.get('absence_type')
+            )
             is_effective_weekend = day_data.get('is_weekend')
             is_actual_weekend = day_data.get('is_actual_weekend', is_effective_weekend)
             is_public_holiday = day_data.get('is_public_holiday', False)
@@ -109,6 +116,8 @@ class OvertimeCalculator:
                     'type': 'weekend',
                     'hours': weekend_hours,
                     'toggl_hours': day_data.get('time_entry_hours', 0.0),
+                    'absence_hours': absence_hours,
+                    'absence_desc': absence_desc,
                     'total_hours': total_hours,
                     'projects': projects_info
                 })
@@ -121,6 +130,8 @@ class OvertimeCalculator:
                     'type': 'weekday',
                     'hours': overtime,
                     'toggl_hours': day_data.get('time_entry_hours', 0.0),
+                    'absence_hours': absence_hours,
+                    'absence_desc': absence_desc,
                     'total_hours': total_hours,
                     'expected_hours': self.default_daily_hours,
                     'projects': projects_info
