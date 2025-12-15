@@ -339,7 +339,6 @@ Set up automated daily synchronization using cron (Linux/Mac) or Task Scheduler 
 ```bash
 # Weekly report generation (every Monday at 9 AM)
 # Generate reports for all users + send via Slack
-0 9 * * 1 cd /path/to/project && python -m src.cli report-weekly --target all --send
 ```
 
 ## 🗄️ Data Storage

@@ -77,8 +77,20 @@ class DataAggregator:
                     absence_review_notes.append(note)
             absence_entries.append(info)
 
+        meeting_entries = [
+            entry for entry in absence_entries
+            if entry.get('absence_type') == 'meeting'
+        ]
+        meeting_full_day = any(
+            self._is_full_day_absence(entry.get('original_hours', entry.get('hours', 0.0)))
+            for entry in meeting_entries
+        )
+
         treated_remote_absence = False
-        if self._should_override_absence_with_work(total_hours, absence_entries):
+        if meeting_full_day:
+            absence_hours = self.default_daily_hours
+            total_daily_hours = self.default_daily_hours
+        elif self._should_override_absence_with_work(total_hours, absence_entries):
             treated_remote_absence = True
             absence_hours = 0.0
             for entry in absence_entries:
