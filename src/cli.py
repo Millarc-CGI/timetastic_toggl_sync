@@ -815,7 +815,7 @@ def report_weekly(week_start: Optional[str], target_user: Optional[str], target:
             if user_obj:
                 weekly_data, overtime_data, weekly_report = _generate_user_weekly_report(
                     user_obj, week_start_date, week_end_date, aggregator, overtime_calc, report_gen,
-                    toggl_service, timetastic_service
+                    toggl_service, timetastic_service, force_refresh=True
                 )
                 print(f"✅ Weekly report generated for {user_obj.display_name}")
                 if send and slack_service:
@@ -846,7 +846,7 @@ def report_weekly(week_start: Optional[str], target_user: Optional[str], target:
                 try:
                     weekly_data, overtime_data, weekly_report = _generate_user_weekly_report(
                         user_obj, week_start_date, week_end_date, aggregator, overtime_calc, report_gen,
-                        toggl_service, timetastic_service
+                        toggl_service, timetastic_service, force_refresh=True
                     )
                     
                     if send and slack_service:
