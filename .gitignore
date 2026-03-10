@@ -16,6 +16,7 @@ build/
 exports/
 cache/
 backups/
+logs/
 *.sqlite
 *.db
 PROGRESS.md

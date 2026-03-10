@@ -130,49 +130,49 @@ def backup_database(
     backup_filename = f"sync_{timestamp}.db"
     backup_path = backup_dir / backup_filename
     
-    print(f"📦 Creating backup...")
+    print(f"[BACKUP] Creating backup...")
     print(f"   Source: {db_path}")
     print(f"   Destination: {backup_path}")
     
     # Copy database file
     try:
         shutil.copy2(db_path, backup_path)
-        print(f"✅ Database copied successfully")
+        print(f"[OK] Database copied successfully")
     except Exception as e:
-        print(f"❌ Error copying database: {e}")
+        print(f"[ERROR] Error copying database: {e}")
         return False
     
     # Calculate checksum
-    print(f"🔐 Calculating checksum...")
+    print(f"[CHECKSUM] Calculating checksum...")
     checksum = calculate_sha256(backup_path)
     checksum_path = backup_path.with_suffix('.db.sha256')
     
     with open(checksum_path, 'w') as f:
         f.write(f"{checksum}  {backup_filename}\n")
     
-    print(f"✅ Checksum: {checksum}")
+    print(f"[OK] Checksum: {checksum}")
     print(f"   Saved to: {checksum_path}")
     
     # Create SQL dump (optional)
     if create_sql:
-        print(f"📄 Creating SQL dump...")
+        print(f"[SQL] Creating SQL dump...")
         sql_path = backup_path.with_suffix('.sql')
         if create_sql_dump(db_path, sql_path):
-            print(f"✅ SQL dump created: {sql_path}")
+            print(f"[OK] SQL dump created: {sql_path}")
         else:
-            print(f"⚠️  SQL dump skipped")
+            print(f"[WARN] SQL dump skipped")
     
     # Rotate old backups
-    print(f"🔄 Rotating backups (retention: {retention_days} days)...")
+    print(f"[ROTATE] Rotating backups (retention: {retention_days} days)...")
     deleted = rotate_backups(backup_dir, retention_days)
     if deleted > 0:
-        print(f"✅ Deleted {deleted} old backup(s)")
+        print(f"[OK] Deleted {deleted} old backup(s)")
     else:
-        print(f"✅ No old backups to delete")
+        print(f"[OK] No old backups to delete")
     
     # Summary
     backup_size = backup_path.stat().st_size / (1024 * 1024)  # MB
-    print(f"\n📊 Backup Summary:")
+    print(f"\n[SUMMARY] Backup Summary:")
     print(f"   File: {backup_filename}")
     print(f"   Size: {backup_size:.2f} MB")
     print(f"   Checksum: {checksum}")
