@@ -1,4 +1,4 @@
-# run_weekly.ps1 - Weekly tasks: refresh-cache + send-reminders
+# run_weekly.ps1 - Weekly tasks: refresh-cache + report-weekly (reports include missing entries reminders)
 # Run: .\scripts\run_weekly.ps1
 
 $ErrorActionPreference = "Stop"
@@ -47,10 +47,10 @@ try {
     $out1 | ForEach-Object { Write-Log ($_.ToString()) }
     if ($LASTEXITCODE -ne 0) { throw "refresh-cache failed (exit code $LASTEXITCODE)" }
 
-    Write-Log "2/2 send-reminders..."
-    $out2 = & $PythonExe -m src.cli send-reminders --days 7 2>&1
+    Write-Log "2/2 report-weekly --target all --send..."
+    $out2 = & $PythonExe -m src.cli report-weekly --target all --send 2>&1
     $out2 | ForEach-Object { Write-Log ($_.ToString()) }
-    if ($LASTEXITCODE -ne 0) { throw "send-reminders failed (exit code $LASTEXITCODE)" }
+    if ($LASTEXITCODE -ne 0) { throw "report-weekly failed (exit code $LASTEXITCODE)" }
 
     Write-Log "=== Weekly run completed OK ==="
 } catch {

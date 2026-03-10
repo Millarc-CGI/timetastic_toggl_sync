@@ -2,6 +2,15 @@
 
 PowerShell scripts for scheduled tasks (weekly, monthly, backup).
 
+- **run_weekly.ps1** – refresh-cache + report-weekly (all users, via Slack). Reports include missing entries reminders.
+- **run_monthly.ps1** – sync-users + report-monthly (all, admin) via Slack.
+- **run_backup.ps1** – SQLite backup with SQL dump and 90-day retention.
+
+## setup_venv.ps1
+
+Installs project dependencies using `python -m pip` (avoids broken pip.exe launcher).
+Run from project root: `.\scripts\setup_venv.ps1`
+
 ## Python Resolution
 
 The scripts search for Python in this order:
@@ -22,3 +31,18 @@ The script logs which Python is used. If you see "WARNING: Falling back to PATH"
 ## Stderr Handling
 
 PowerShell with `$ErrorActionPreference = "Stop"` treats stderr from external programs as errors. Python writes tracebacks to stderr, which could cause the script to throw before capturing the full output. The scripts temporarily set `Continue` when invoking Python so all output (including tracebacks) is logged.
+
+## Venv Repair (if pip.exe has wrong path)
+
+If venv was copied or the user path changed, `pip.exe` may have a hardcoded wrong path. The project folders (`timetastic_toggl_sync`, etc.) are **siblings** to `Scripts/` and `Lib/` – they are NOT inside the venv's managed directories.
+
+To repair venv without touching projects:
+
+```powershell
+cd C:\Users\hanna.kachurouskaya\Documents\venv
+Remove-Item -Recurse -Force Scripts, Lib, pyvenv.cfg
+python -m venv .
+.\Scripts\python.exe -m pip install -r timetastic_toggl_sync\requirements.txt
+```
+
+Only `Scripts`, `Lib`, and `pyvenv.cfg` are removed. Project folders stay.

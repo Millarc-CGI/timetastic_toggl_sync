@@ -84,8 +84,6 @@ class Settings:
     email_aliases: Dict[str, str]  # Maps alternative emails to canonical email
     
     # Notification Settings
-    missing_entries_check_days: int
-    send_missing_entries_notifications: bool
     send_monthly_reports: bool
     send_admin_notifications: bool
     excluded_report_emails: Set[str]
@@ -162,8 +160,6 @@ def load_settings() -> Settings:
         email_aliases={k.lower().strip(): v.lower().strip() for k, v in (_parse_json(os.getenv("EMAIL_ALIASES", "{}"), {}) or {}).items()},
         
         # Notification Settings
-        missing_entries_check_days=int(os.getenv("MISSING_ENTRIES_CHECK_DAYS", "7")),
-        send_missing_entries_notifications=os.getenv("SEND_MISSING_ENTRIES_NOTIFICATIONS", "true").lower() == "true",
         send_monthly_reports=os.getenv("SEND_MONTHLY_REPORTS", "true").lower() == "true",
         send_admin_notifications=os.getenv("SEND_ADMIN_NOTIFICATIONS", "true").lower() == "true",
         excluded_report_emails=_split_csv_set(os.getenv("EXCLUDED_REPORT_EMAILS", "")),

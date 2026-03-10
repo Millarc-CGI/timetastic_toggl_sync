@@ -6,7 +6,7 @@ A comprehensive integrator for **Toggl Track** (time tracking) + **Timetastic** 
 
 - **Automated daily sync** of time tracking data from Toggl and absences from Timetastic
 - **Monthly reports** with overtime calculations and project statistics
-- **Slack notifications** for missing time entries and monthly summaries
+- **Slack notifications** via weekly and monthly reports (include missing entries)
 - **Role-based access control** for different types of reports (Admin/Producer/User)
 - **Simple overtime calculation** with standard thresholds
 - **Project-focused analytics** for producers and managers
@@ -60,9 +60,9 @@ src/
 - **Attendance Analysis**: Missing entries detection and absence tracking
 
 ### Notifications & Communication
-- **Slack Integration**: Automated notifications for missing entries and monthly reports
+- **Slack Integration**: Automated notifications via weekly and monthly reports
 - **Role-based Messaging**: Different notification types for different user roles
-- **Weekly Reminders**: Automated weekly checks for missing time entries
+- **Missing Entries**: Included in weekly and monthly reports (no separate reminders)
 
 ### Access Control
 - **Role-based Reports**: Admin, Producer, and User-specific report access
@@ -85,10 +85,11 @@ src/
    cd timetastic_toggl_sync
    ```
 
-2. **Install dependencies**:
+2. **Install dependencies** (use `python -m pip` so packages go into the correct venv):
    ```bash
-   pip install -r requirements.txt
+   python -m pip install -r requirements.txt
    ```
+   Or run the setup script: `.\scripts\setup_venv.ps1`
 
 3. **Configure environment**:
    ```bash
@@ -227,13 +228,7 @@ python -m src.cli send-admin-report --select-month 2025-11
 
 > **Note:** Cache is automatically refreshed based on TTL (7 days for previous month, 30 days for older months). No manual cache refresh flags are needed.
 
-#### Notifications
-```bash
-# Check for missing entries and send Slack reminders to active Toggl users
-# Only sends reminders to users who have missing entries
-python -m src.cli send-reminders
-python -m src.cli send-reminders --days 14  # Check last 14 days
-```
+> **Note:** Missing entries reminders are included in weekly and monthly reports. No separate send-reminders command.
 
 #### Data Export
 ```bash
@@ -316,11 +311,11 @@ Set up automated daily synchronization using cron (Linux/Mac) or Task Scheduler 
 0 6 * * * cd /path/to/project && python -m src.cli sync --start $(date -d yesterday +\%Y-\%m-\%d) --end $(date -d yesterday +\%Y-\%m-\%d)
 ```
 
-### Weekly Notifications
+### Weekly Reports
 ```bash
-# Weekly missing entries reminders (Fridays at 9 AM)
-# Checks for missing entries and sends reminders only to users who have missing entries
-0 9 * * 5 cd /path/to/project && python -m src.cli send-reminders
+# Weekly report generation (every Monday at 9 AM) - refresh cache + send weekly reports
+# Reports include missing entries reminders
+0 9 * * 1 cd /path/to/project && python -m src.cli refresh-cache && python -m src.cli report-weekly --target all --send
 ```
 
 ### Monthly Reports
@@ -337,12 +332,6 @@ Set up automated daily synchronization using cron (Linux/Mac) or Task Scheduler 
 
 # Generate reports for a specific past month (override default previous month)
 python -m src.cli report-monthly --target all --select-month 2024-11
-```
-
-### Weekly Reports
-```bash
-# Weekly report generation (every Monday at 9 AM)
-# Generate reports for all users + send via Slack
 ```
 
 ## 🗄️ Data Storage
@@ -377,7 +366,6 @@ Customize how different absence types are handled:
 ```env
 SLACK_NOTIFICATION_DAY=Friday
 SLACK_NOTIFICATION_TIME=09:00
-MISSING_ENTRIES_CHECK_DAYS=7
 SEND_MONTHLY_REPORTS=true
 EXCLUDED_REPORT_EMAILS=
 SEND_ADMIN_NOTIFICATIONS=true

@@ -90,44 +90,6 @@ class SlackService:
             print(f"Failed to send message to {channel}: {e}")
             return False
     
-    def send_missing_entries_reminder(
-        self, 
-        user_email: str, 
-        missing_days: List[date],
-        days_to_check: int = 7
-    ) -> bool:
-        """Send reminder about missing time entries."""
-        user = self.find_user_by_email(user_email)
-        if not user:
-            print(f"Slack user not found for email: {user_email}")
-            return False
-        
-        user_id = user['id']
-        display_name = user.get('profile', {}).get('display_name', user_email)
-        
-        if not missing_days:
-            return True  # No missing entries
-        
-        # Create message
-        missing_dates_str = "\n".join([f"• {day.strftime('%Y-%m-%d (%A)')}" for day in missing_days])
-        
-        message = f"""⏰ *Missing Time Entries Reminder*
-
-Hi {display_name}! 
-
-I noticed you haven't logged time entries for the following days in the last {days_to_check} days:
-
-{missing_dates_str}
-
-Please log your time entries in Toggl Track to ensure accurate reporting.
-
-Need help? Contact your administrator or check the Toggl Track documentation.
-
----
-*This is an automated message from {self.bot_name}*"""
-        
-        return self.send_dm(user_id, message)
-    
     def send_monthly_report(self, user_email: str, report_data: Dict[str, Any]) -> bool:
         """Send monthly/weekly report to user."""
         user = self.find_user_by_email(user_email)
