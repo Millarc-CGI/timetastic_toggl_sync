@@ -303,8 +303,28 @@ Reports are stored with role-specific naming:
 
 ## 📅 Automation & Scheduling
 
+### Windows (Task Scheduler + PowerShell)
+
+1. Ensure venv is set up: `.\scripts\setup_venv.ps1`
+2. From project root, register tasks: `.\scripts\setup_tasks.ps1`
+3. Verify in Task Scheduler (`taskschd.msc`)
+
+| Task        | Schedule               | Action            |
+| ----------- | ---------------------- | ----------------- |
+| tts_weekly  | Monday 10:00           | refresh-cache + report-weekly |
+| tts_monthly | 1st day of month 10:05 | sync-users + report-monthly (all, admin, production) |
+| tts_backup  | Monday 02:00           | SQLite backup (90-day retention) |
+
+**Order matters:** In `tts_monthly`, `sync-users` runs first – it updates user mappings (Toggl/Timetastic/Slack) in SQLite. Reports read from this table, so new users only appear after sync-users.
+
+**Health check:** Before reports, `run_weekly.ps1` and `run_monthly.ps1` run `ping --check`. If any service (Toggl, Timetastic, Slack, DB) fails, the run is skipped and the error is logged.
+
+Logs: `logs/run_weekly_YYYY-MM-DD.log`, `logs/run_monthly_YYYY-MM-DD.log`, `logs/run_backup_YYYY-MM-DD.log`
+
+### Linux/Mac (cron)
+
 ### Daily Sync
-Set up automated daily synchronization using cron (Linux/Mac) or Task Scheduler (Windows):
+Set up automated daily synchronization using cron (Linux/Mac):
 
 ```bash
 # Daily sync at 6 AM
@@ -320,15 +340,12 @@ Set up automated daily synchronization using cron (Linux/Mac) or Task Scheduler 
 
 ### Monthly Reports
 ```bash
-# Monthly report generation (1st of each month at 8 AM)
-# Generate reports for all users + send via Slack
-0 8 1 * * cd /path/to/project && python -m src.cli report-monthly --target all --send
-
-# Generate admin report + send via Slack
-0 8 1 * * cd /path/to/project && python -m src.cli report-monthly --target admin --send
-
-# Generate project statistics + send to producers
-0 8 1 * * cd /path/to/project && python -m src.cli report-monthly --target production --send
+# IMPORTANT: sync-users first (updates user mappings). Reports read from SQLite users table.
+# Monthly (1st of each month at 8 AM) – sequential: sync-users, then all reports
+0 8 1 * * cd /path/to/project && python -m src.cli sync-users && \
+  python -m src.cli report-monthly --target all --send && \
+  python -m src.cli report-monthly --target admin --send && \
+  python -m src.cli report-monthly --target production --send
 
 # Generate reports for a specific past month (override default previous month)
 python -m src.cli report-monthly --target all --select-month 2024-11
@@ -340,6 +357,7 @@ python -m src.cli report-monthly --target all --select-month 2024-11
 - **Location**: `./data/sync.db` (configurable)
 - **Tables**: users, time_entries, absences, sync_log, monthly_reports
 - **Features**: Automatic cleanup of old data, comprehensive indexing
+- **Retention:** `refresh-cache` runs cleanup before sync (default: delete data older than 18 months). Use `refresh-cache --retention-months 0` to disable.
 
 ### File Exports
 - **Location**: `./exports/YYYY-MM/` (configurable)
@@ -347,6 +365,12 @@ python -m src.cli report-monthly --target all --select-month 2024-11
 - **Organization**: Role-based file naming and directory structure
 - **Features**: Formatted tables, wide columns, frozen headers, color-coded headers
 - Combined user workbook available as `user_combined_database_YYYY-MM.xlsx` (arkusze per user).
+
+### Backup
+
+**Local backup** (current setup): Use `scripts/backup_db.py` directly or `scripts/run_backup.ps1` (PowerShell wrapper with logging). Creates SQLite copy + SHA256 checksum + SQL dump in `./backups/` with 90-day retention. Scheduled via Task Scheduler (`tts_backup`, Monday 02:00).
+
+**GitHub Actions** (`.github/workflows/backup.yml`): Prepared for future use when the project runs on NAS or cloud. Not used with local setup – the workflow has no access to the local SQLite database.
 
 ## 🔧 Customization
 

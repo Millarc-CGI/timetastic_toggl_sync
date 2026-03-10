@@ -8,6 +8,10 @@ $LogDir = Join-Path $ProjectRoot "logs"
 $DateStr = Get-Date -Format "yyyy-MM-dd"
 $LogFile = Join-Path $LogDir "run_backup_$DateStr.log"
 
+# UTF-8 for Python output and log file
+$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$env:PYTHONIOENCODING = "utf-8"
+
 # Find Python - venv in parent dir (project inside venv) or venv/.venv in project
 $VenvParent = Split-Path -Parent $ProjectRoot
 $VenvPython = Join-Path $VenvParent "Scripts\python.exe"
@@ -27,7 +31,7 @@ function Write-Log {
     param([string]$Message)
     $Line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message"
     Write-Host $Line
-    Add-Content -Path $LogFile -Value $Line
+    Add-Content -Path $LogFile -Value $Line -Encoding UTF8
 }
 
 Write-Log "=== Backup run started ==="
@@ -38,9 +42,6 @@ if ($PythonExe -eq "python") {
     Write-Log "  $(Join-Path $ProjectRoot 'venv\Scripts\python.exe')"
 }
 Set-Location $ProjectRoot
-
-# Force UTF-8 for Python output (avoids UnicodeEncodeError with emoji on Windows cp1250)
-$env:PYTHONIOENCODING = "utf-8"
 
 try {
     $BackupScript = Join-Path $ProjectRoot "scripts\backup_db.py"

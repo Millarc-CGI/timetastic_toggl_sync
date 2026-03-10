@@ -1361,6 +1361,27 @@ class SQLiteStorage:
                 print(f"Cleanup completed: {time_entries_deleted} time entries, {absences_deleted} absences, {sync_logs_deleted} sync logs deleted")
         except Exception as e:
             print(f"Error during cleanup: {e}")
+
+    def cleanup_old_data_by_months(self, months_to_keep: int = 18) -> Dict[str, int]:
+        """Delete time entries and absences older than N months (by entry date, not cache date)."""
+        cutoff = (datetime.now() - timedelta(days=months_to_keep * 31)).date()
+        cutoff_str = cutoff.isoformat()
+        sync_cutoff = (datetime.now() - timedelta(days=months_to_keep * 31)).isoformat()
+        result = {"time_entries": 0, "absences": 0, "sync_logs": 0}
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM time_entries WHERE date(start_time) < ?", (cutoff_str,))
+                result["time_entries"] = cursor.rowcount
+                cursor.execute("DELETE FROM absences WHERE end_date < ?", (cutoff_str,))
+                result["absences"] = cursor.rowcount
+                cursor.execute("DELETE FROM sync_log WHERE created_at < ?", (sync_cutoff,))
+                result["sync_logs"] = cursor.rowcount
+                conn.commit()
+            print(f"🧹 Cleanup: removed {result['time_entries']} time entries, {result['absences']} absences, {result['sync_logs']} sync logs (older than {months_to_keep} months)")
+        except Exception as e:
+            print(f"Error during cleanup: {e}")
+        return result
     
     def get_database_stats(self) -> Dict[str, Any]:
         """Get database statistics."""

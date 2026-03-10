@@ -2,14 +2,28 @@
 
 PowerShell scripts for scheduled tasks (weekly, monthly, backup).
 
-- **run_weekly.ps1** – refresh-cache + report-weekly (all users, via Slack). Reports include missing entries reminders.
-- **run_monthly.ps1** – sync-users + report-monthly (all, admin) via Slack.
+- **run_weekly.ps1** – health check (ping --check) + refresh-cache (includes 18‑month cleanup before sync) + report-weekly (all users, via Slack). Reports include missing entries reminders.
+- **run_monthly.ps1** – health check + sync-users + report-monthly (all, admin) via Slack.
 - **run_backup.ps1** – SQLite backup with SQL dump and 90-day retention.
+
+If health check fails (Toggl, Timetastic, Slack, or DB unavailable), the run is skipped and the error is logged.
 
 ## setup_venv.ps1
 
 Installs project dependencies using `python -m pip` (avoids broken pip.exe launcher).
 Run from project root: `.\scripts\setup_venv.ps1`
+
+## setup_tasks.ps1
+
+Registers Windows Task Scheduler jobs using `Register-ScheduledTask`. Run from project root: `.\scripts\setup_tasks.ps1`
+
+| Task        | Schedule              | Action            |
+| ----------- | --------------------- | ----------------- |
+| tts_weekly  | Monday 10:00          | run_weekly.ps1    |
+| tts_monthly | 1st day of month 10:05| run_monthly.ps1   |
+| tts_backup  | Monday 02:00          | run_backup.ps1    |
+
+If a task already exists, it is updated. Verify in Task Scheduler (`taskschd.msc`).
 
 ## Python Resolution
 

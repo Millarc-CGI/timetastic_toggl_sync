@@ -25,61 +25,84 @@ def cli():
 
 
 @cli.command()
-def ping():
+@click.option("--check", is_flag=True, help="Exit 1 if any service fails (for health check before reports)")
+def ping(check: bool):
     """Test configuration and connections to all services."""
     settings = load_settings()
-    
-    print("🔍 Testing Configuration...")
-    print(f"   TOGGL_BASE_URL: {settings.toggl_base_url}")
-    print(f"   TIMETASTIC_BASE_URL: {settings.timetastic_base_url}")
-    print(f"   EXPORTS_DIR: {settings.exports_dir}")
-    print(f"   DATABASE_PATH: {settings.database_path}")
-    print(f"   TOGGL_TOKEN set: {'✅' if settings.toggl_api_token else '❌'}")
-    print(f"   TIMETASTIC_TOKEN set: {'✅' if settings.timetastic_api_token else '❌'}")
-    print(f"   SLACK_TOKEN set: {'✅' if settings.slack_bot_token else '❌'}")
-    print()
-    
-    # Test service connections
-    print("🔗 Testing Service Connections...")
-    
+    failed = False
+
+    if not check:
+        print("🔍 Testing Configuration...")
+        print(f"   TOGGL_BASE_URL: {settings.toggl_base_url}")
+        print(f"   TIMETASTIC_BASE_URL: {settings.timetastic_base_url}")
+        print(f"   EXPORTS_DIR: {settings.exports_dir}")
+        print(f"   DATABASE_PATH: {settings.database_path}")
+        print(f"   TOGGL_TOKEN set: {'✅' if settings.toggl_api_token else '❌'}")
+        print(f"   TIMETASTIC_TOKEN set: {'✅' if settings.timetastic_api_token else '❌'}")
+        print(f"   SLACK_TOKEN set: {'✅' if settings.slack_bot_token else '❌'}")
+        print()
+        print("🔗 Testing Service Connections...")
+
     # Test Toggl
     try:
         toggl_service = TogglService(settings)
         if toggl_service.test_connection():
             user_info = toggl_service.get_user_info()
-            print(f"   ✅ Toggl: Connected as {user_info.get('fullname', 'Unknown')}")
+            if not check:
+                print(f"   ✅ Toggl: Connected as {user_info.get('fullname', 'Unknown')}")
         else:
-            print("   ❌ Toggl: Connection failed")
+            failed = True
+            if not check:
+                print("   ❌ Toggl: Connection failed")
     except Exception as e:
-        print(f"   ❌ Toggl: Error - {e}")
-    
+        failed = True
+        if not check:
+            print(f"   ❌ Toggl: Error - {e}")
+
     # Test Timetastic
     try:
         timetastic_service = TimetasticService(settings)
         if timetastic_service.test_connection():
-            print("   ✅ Timetastic: Connection successful")
+            if not check:
+                print("   ✅ Timetastic: Connection successful")
         else:
-            print("   ❌ Timetastic: Connection failed")
+            failed = True
+            if not check:
+                print("   ❌ Timetastic: Connection failed")
     except Exception as e:
-        print(f"   ❌ Timetastic: Error - {e}")
-    
+        failed = True
+        if not check:
+            print(f"   ❌ Timetastic: Error - {e}")
+
     # Test Slack
     try:
         slack_service = SlackService(settings)
         if slack_service.test_connection():
-            print("   ✅ Slack: Connection successful")
+            if not check:
+                print("   ✅ Slack: Connection successful")
         else:
-            print("   ❌ Slack: Connection failed")
+            failed = True
+            if not check:
+                print("   ❌ Slack: Connection failed")
     except Exception as e:
-        print(f"   ❌ Slack: Error - {e}")
-    
+        failed = True
+        if not check:
+            print(f"   ❌ Slack: Error - {e}")
+
     # Test storage
     try:
         storage = SQLiteStorage(settings)
         stats = storage.get_database_stats()
-        print(f"   ✅ Database: {stats.get('users', 0)} users, {stats.get('time_entries', 0)} entries")
+        if not check:
+            print(f"   ✅ Database: {stats.get('users', 0)} users, {stats.get('time_entries', 0)} entries")
     except Exception as e:
-        print(f"   ❌ Database: Error - {e}")
+        failed = True
+        if not check:
+            print(f"   ❌ Database: Error - {e}")
+
+    if check and failed:
+        print("Health check failed: one or more services unavailable")
+        sys.exit(1)
 
 
 def _sync_range(settings, start_date: date, end_date: date, sync_type: str = "manual_sync"):
@@ -418,9 +441,14 @@ def sync(start: Optional[str], end: Optional[str]):
 
 
 @cli.command()
-def refresh_cache():
+@click.option("--retention-months", default=18, help="Delete data older than N months before refresh (0=disabled)")
+def refresh_cache(retention_months: int):
     """Weekly refresh of previous month's data from Toggl (scheduled for Monday 8:00)."""
     settings = load_settings()
+    
+    if retention_months > 0:
+        storage = SQLiteStorage(settings)
+        storage.cleanup_old_data_by_months(retention_months)
     
     print("🔄 Starting weekly cache refresh for previous month...")
     

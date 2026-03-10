@@ -8,6 +8,10 @@ $LogDir = Join-Path $ProjectRoot "logs"
 $DateStr = Get-Date -Format "yyyy-MM-dd"
 $LogFile = Join-Path $LogDir "run_monthly_$DateStr.log"
 
+# UTF-8 for Python output (cli uses emoji) and log file
+$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$env:PYTHONIOENCODING = "utf-8"
+
 # Find Python - venv in parent dir (project inside venv) or venv/.venv in project
 $VenvParent = Split-Path -Parent $ProjectRoot
 $VenvPython = Join-Path $VenvParent "Scripts\python.exe"
@@ -27,7 +31,7 @@ function Write-Log {
     param([string]$Message)
     $Line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message"
     Write-Host $Line
-    Add-Content -Path $LogFile -Value $Line
+    Add-Content -Path $LogFile -Value $Line -Encoding UTF8
 }
 
 Write-Log "=== Monthly run started ==="
@@ -37,23 +41,30 @@ if ($PythonExe -eq "python") {
 }
 Set-Location $ProjectRoot
 
-$env:PYTHONIOENCODING = "utf-8"
-
 $prevErrorAction = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 
 try {
-    Write-Log "1/3 sync-users (must run first - updates user mappings in SQLite)..."
+    Write-Log "0/4 Health check (ping --check)..."
+    $pingOut = & $PythonExe -m src.cli ping --check 2>&1
+    $pingOut | ForEach-Object { Write-Log ($_.ToString()) }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Log "ERROR: Health check failed - skipping monthly run"
+        $ErrorActionPreference = $prevErrorAction
+        exit 1
+    }
+
+    Write-Log "1/4 sync-users (must run first - updates user mappings in SQLite)..."
     $out1 = & $PythonExe -m src.cli sync-users 2>&1
     $out1 | ForEach-Object { Write-Log ($_.ToString()) }
     if ($LASTEXITCODE -ne 0) { throw "sync-users failed (exit code $LASTEXITCODE)" }
 
-    Write-Log "2/3 report-monthly --target all --send..."
+    Write-Log "2/4 report-monthly --target all --send..."
     $out2 = & $PythonExe -m src.cli report-monthly --target all --send 2>&1
     $out2 | ForEach-Object { Write-Log ($_.ToString()) }
     if ($LASTEXITCODE -ne 0) { throw "report-monthly all failed (exit code $LASTEXITCODE)" }
 
-    Write-Log "3/3 report-monthly --target admin --send..."
+    Write-Log "3/4 report-monthly --target admin --send..."
     $out3 = & $PythonExe -m src.cli report-monthly --target admin --send 2>&1
     $out3 | ForEach-Object { Write-Log ($_.ToString()) }
     if ($LASTEXITCODE -ne 0) { throw "report-monthly admin failed (exit code $LASTEXITCODE)" }
