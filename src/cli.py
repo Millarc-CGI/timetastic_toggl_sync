@@ -4,6 +4,7 @@ CLI for the Timetastic-Toggl sync system using the restructured architecture.
 
 import os
 import sys
+import fnmatch
 import click
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict, Any, Literal
@@ -1128,15 +1129,19 @@ def send_admin_report(select_month: Optional[str]):
         raise
 
 
-def _get_active_projects(toggl_service: TogglService) -> List[Project]:
-    """Get list of active projects from Toggl."""
+def _get_workspace_projects(
+    toggl_service: TogglService,
+    active_only: bool = True,
+    force_refresh: bool = False,
+) -> List[Project]:
+    """Get projects from Toggl. Set active_only=False to include archived/inactive projects."""
     try:
-        projects_data = toggl_service.get_projects()
+        projects_data = toggl_service.get_projects(force_refresh=force_refresh)
         projects = []
         for project_data in projects_data:
             try:
                 project = Project.from_toggl(project_data)
-                if project.active:
+                if not active_only or project.active:
                     projects.append(project)
             except Exception:
                 continue
@@ -1144,6 +1149,46 @@ def _get_active_projects(toggl_service: TogglService) -> List[Project]:
     except Exception as e:
         print(f"⚠️ Failed to fetch projects: {e}")
         return []
+
+
+def _projects_matching_selection_token(available_projects: List[Project], token: str) -> List[Project]:
+    """Resolve one selection token: 1-based index, exact name, or glob (* and ?), case-insensitive."""
+    token = (token or "").strip()
+    if not token:
+        return []
+    try:
+        idx = int(token) - 1
+        if 0 <= idx < len(available_projects):
+            return [available_projects[idx]]
+    except ValueError:
+        pass
+    glob_mode = "*" in token or "?" in token
+    matches: List[Project] = []
+    pattern = token.lower()
+    for proj in available_projects:
+        name = (proj.name or "").strip()
+        if not name:
+            continue
+        if glob_mode:
+            if fnmatch.fnmatch(name.lower(), pattern):
+                matches.append(proj)
+        elif name.lower() == pattern:
+            matches.append(proj)
+    return matches
+
+
+def _projects_from_selection_tokens(available_projects: List[Project], tokens: List[str]) -> List[Project]:
+    """Deduplicate by project_id while preserving order."""
+    seen: set[int] = set()
+    out: List[Project] = []
+    for token in tokens:
+        for proj in _projects_matching_selection_token(available_projects, token):
+            pid = proj.project_id
+            if pid is None or pid in seen:
+                continue
+            seen.add(pid)
+            out.append(proj)
+    return out
 
 
 def _ensure_project_cache(
@@ -1186,13 +1231,37 @@ def _ensure_project_cache(
 
 
 @cli.command()
-@click.option("--project-name", multiple=True, help="Project name(s) to generate stats for (can be specified multiple times)")
+@click.option(
+    "--project-name",
+    multiple=True,
+    help="Project name(s) or glob pattern (e.g. xiaomi*). Quote * in the shell. Repeatable.",
+)
 @click.option("--start-date", help="Start date (YYYY-MM-DD, defaults to project first tracking date)")
 @click.option("--end-date", help="End date (YYYY-MM-DD, defaults to today)")
 @click.option("--target", type=click.Choice(['production']), default='production',
               help="Target: production (project stats for producers)")
+@click.option(
+    "--include-inactive",
+    is_flag=True,
+    default=False,
+    help="Include archived/inactive Toggl projects in the list and selection",
+)
+@click.option(
+    "--refresh-projects",
+    is_flag=True,
+    default=False,
+    help="Bypass local project cache and refetch the full project list from Toggl",
+)
 @click.option("--send", is_flag=True, default=False, help="Send project statistics report to producers via Slack")
-def report_project_stats(project_name: tuple, start_date: Optional[str], end_date: Optional[str], target: str, send: bool):
+def report_project_stats(
+    project_name: tuple,
+    start_date: Optional[str],
+    end_date: Optional[str],
+    target: str,
+    include_inactive: bool,
+    refresh_projects: bool,
+    send: bool,
+):
     """Generate project overtime statistics for selected projects."""
     settings = load_settings()
     
@@ -1204,10 +1273,16 @@ def report_project_stats(project_name: tuple, start_date: Optional[str], end_dat
         toggl_service = TogglService(settings, storage=storage)
         timetastic_service = TimetasticService(settings, storage=storage)
         
-        # Get active projects
-        active_projects = _get_active_projects(toggl_service)
-        if not active_projects:
-            print("❌ No active projects found")
+        if refresh_projects:
+            print("🔄 Refreshing project list from Toggl (bypassing cache)...")
+        available_projects = _get_workspace_projects(
+            toggl_service,
+            active_only=not include_inactive,
+            force_refresh=refresh_projects,
+        )
+        if not available_projects:
+            scope = "projects" if include_inactive else "active projects"
+            print(f"❌ No {scope} found")
             return
         
         # Select projects
@@ -1216,37 +1291,29 @@ def report_project_stats(project_name: tuple, start_date: Optional[str], end_dat
         
         if not project_names_list:
             # Interactive selection
-            print("\n📋 Available active projects:")
-            for idx, proj in enumerate(active_projects, start=1):
-                print(f"   {idx}. {proj.name} (ID: {proj.project_id})")
+            label = "Available projects (including inactive):" if include_inactive else "Available active projects:"
+            print(f"\n📋 {label}")
+            for idx, proj in enumerate(available_projects, start=1):
+                status = "" if proj.active else " — inactive"
+                print(f"   {idx}. {proj.name} (ID: {proj.project_id}){status}")
             
-            response = input("\nEnter project names or numbers (comma-separated, or 'all' for all projects): ").strip()
+            response = input(
+                "\nEnter numbers, names, or glob patterns like xiaomi* (comma-separated), or 'all': "
+            ).strip()
             if response.lower() == 'all':
-                selected_projects = active_projects
+                selected_projects = available_projects
             else:
-                tokens = [t.strip() for t in response.split(",")]
-                for token in tokens:
-                    # Try as number first
-                    try:
-                        idx = int(token) - 1
-                        if 0 <= idx < len(active_projects):
-                            selected_projects.append(active_projects[idx])
-                            continue
-                    except ValueError:
-                        pass
-                    
-                    # Try as name
-                    normalized_token = token.lower().strip()
-                    for proj in active_projects:
-                        if proj.name.lower().strip() == normalized_token:
-                            selected_projects.append(proj)
-                            break
+                tokens = [t.strip() for t in response.split(",") if t.strip()]
+                selected_projects = _projects_from_selection_tokens(available_projects, tokens)
+                for t in tokens:
+                    if not _projects_matching_selection_token(available_projects, t):
+                        print(f"⚠️ No project matched: {t!r}")
         else:
-            # Use provided project names
-            normalized_names = {name.lower().strip() for name in project_names_list}
-            for proj in active_projects:
-                if proj.name.lower().strip() in normalized_names:
-                    selected_projects.append(proj)
+            selected_projects = _projects_from_selection_tokens(available_projects, project_names_list)
+            for t in project_names_list:
+                t = t.strip()
+                if t and not _projects_matching_selection_token(available_projects, t):
+                    print(f"⚠️ No project matched: {t!r}")
         
         if not selected_projects:
             print("❌ No projects selected")

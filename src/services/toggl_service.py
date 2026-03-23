@@ -7,7 +7,7 @@ import json
 import hashlib
 from pathlib import Path
 import requests
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, date, timedelta
 
 from ..config import Settings
@@ -79,6 +79,78 @@ class TogglService:
     def get_workspaces(self) -> List[Dict[str, Any]]:
         """Get list of workspaces."""
         return self._make_request("/workspaces")
+
+    @staticmethod
+    def _normalize_projects_payload(payload: Any) -> Tuple[List[Dict[str, Any]], Optional[int]]:
+        """
+        Toggl v9 may return a JSON array or an object with ``items`` and optional ``total_count``.
+        Returns (project_dicts, total_count_if_present).
+        """
+        if payload is None:
+            return [], None
+        if isinstance(payload, list):
+            return [p for p in payload if isinstance(p, dict)], None
+        if isinstance(payload, dict):
+            total_raw = payload.get("total_count")
+            total: Optional[int] = None
+            if isinstance(total_raw, int):
+                total = total_raw
+            items = payload.get("items")
+            if isinstance(items, list):
+                return [p for p in items if isinstance(p, dict)], total
+        return [], None
+
+    def _fetch_all_workspace_projects(self, workspace: int) -> List[Dict[str, Any]]:
+        """
+        Fetch all projects for a workspace: paginated GET, active + inactive (``active=both``),
+        up to 200 per page per Toggl API limits.
+        """
+        all_items: List[Dict[str, Any]] = []
+        seen_ids: set[int] = set()
+        page = 1
+        per_page = 200
+        max_pages = 500
+        reported_total: Optional[int] = None
+
+        while page <= max_pages:
+            params: Dict[str, Any] = {
+                "active": "both",
+                "page": page,
+                "per_page": per_page,
+            }
+            payload = self._make_request(f"/workspaces/{workspace}/projects", params=params)
+            batch, page_total = self._normalize_projects_payload(payload)
+            if page_total is not None:
+                reported_total = page_total
+
+            if not batch:
+                break
+
+            added = 0
+            for p in batch:
+                pid = p.get("id")
+                if pid is None:
+                    continue
+                try:
+                    pid_int = int(pid)
+                except (TypeError, ValueError):
+                    continue
+                if pid_int in seen_ids:
+                    continue
+                seen_ids.add(pid_int)
+                all_items.append(p)
+                added += 1
+
+            # Same page repeated (some API quirks) — avoid infinite pagination
+            if added == 0:
+                break
+            if len(batch) < per_page:
+                break
+            if reported_total is not None and len(all_items) >= reported_total:
+                break
+            page += 1
+
+        return all_items
     
     def get_projects(self, workspace_id: Optional[int] = None, force_refresh: bool = False) -> List[Dict[str, Any]]:
         """Get list of projects in workspace with caching (TTL 30 days)."""
@@ -118,8 +190,8 @@ class TogglService:
             if cached_projects is not None:
                 return cached_projects
         
-        # Fetch from API
-        projects = self._make_request(f"/workspaces/{workspace}/projects")
+        # Fetch from API (paginated; active + inactive — callers filter if needed)
+        projects = self._fetch_all_workspace_projects(int(workspace))
         
         # Store cache and update metadata
         if projects and cache_path:
@@ -148,7 +220,7 @@ class TogglService:
                 )
         
         return projects
-    
+
     def get_workspace_users(self, workspace_id: Optional[int] = None, force_refresh: bool = False) -> List[Dict[str, Any]]:
         """Get list of users in workspace with caching (TTL 30 days)."""
         workspace = workspace_id or self.workspace_id
@@ -833,7 +905,9 @@ class TogglService:
         """Load cached projects from file."""
         try:
             with path.open("r", encoding="utf-8") as handle:
-                return json.load(handle)
+                raw = json.load(handle)
+            items, _ = self._normalize_projects_payload(raw)
+            return items if items else None
         except FileNotFoundError:
             return None
         except Exception:
