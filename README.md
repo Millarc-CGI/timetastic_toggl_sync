@@ -37,13 +37,11 @@ src/
 │   ├── overtime_calculator.py # Overtime calculations
 │   ├── statistics_generator.py # Analytics generation
 │   ├── report_generator.py # Report creation
-│   └── date_ranges.py     # Timezone-aware date helpers
+│   ├── date_ranges.py     # Timezone-aware date helpers
+│   └── tests/             # Unit tests (pytest) and dev scripts
 ├── access_control/        # Role-based permissions
 │   └── permissions.py     # Access control logic
 ```
-
-> Local API smoke tests live under `src/tests/` for developer use only and are not part of the packaged architecture.
-
 
 ## 🚀 Features
 
@@ -244,26 +242,6 @@ python -m src.cli send-admin-report --select-month 2025-11
 # Export raw data for a specific month
 python -m src.cli export --select-month 2025-10
 ```
-
-### Testing API Connections
-
-Test individual service connections:
-
-```bash
-# Test Slack
-python -m src.tests.slack_test
-
-# Test Toggl
-python -m src.tests.toggl_test
-
-# Test Timetastic
-python -m src.tests.timetastic_test
-```
-
-### Debug Scripts
-- `python -m src.tests.report_debug` – fetches data for the configured test user and prints weekly/monthly summaries (plus optional Slack delivery).
-- `python -m src.tests.report_debug --bulk` – reruns monthly report generation for all synced users and prints each user's hours, overtime, and missing entries.
-- `python -m src.tests.project_stats_debug --select-month 2025-10 --limit 5` – aggregates workspace time entries, runs `StatisticsGenerator.generate_project_stats`, and prints the top projects for the selected month.
 
 ## 📊 Report Types
 
@@ -467,7 +445,6 @@ The system provides comprehensive logging:
 For support and questions:
 - Check the troubleshooting section
 - Review the configuration documentation
-- Test individual components using the test scripts
 - Check system logs for detailed error information
 
 
