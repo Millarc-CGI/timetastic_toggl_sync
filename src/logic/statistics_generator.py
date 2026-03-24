@@ -15,6 +15,15 @@ from ..config import Settings
 from ..models.user import User
 from ..models.project import Project
 
+from .kpi_calculator import (
+    HOURS_SHARE_PCT,
+    KPI_LEGEND_LINES,
+    OVERTIME_SHARE_PCT,
+    aggregate_by_user,
+    compute_team_totals,
+    enrich_project_stat_rows,
+)
+
 
 class StatisticsGenerator:
     """Generates various statistics and reports."""
@@ -638,6 +647,8 @@ class StatisticsGenerator:
             "Total Hours",
             "Normal Overtime",
             "Weekend Overtime",
+            "Hours share %",
+            "Overtime share %",
         ]
 
         workbook = Workbook()
@@ -645,10 +656,17 @@ class StatisticsGenerator:
         if workbook.worksheets:
             workbook.remove(workbook.worksheets[0])
 
+        ncols = len(headers)
+
         # Create one sheet per project
         for project_name, records in projects_data.items():
             if not records:
                 continue
+
+            records = list(records)
+            if HOURS_SHARE_PCT not in records[0]:
+                records, _ = enrich_project_stat_rows(records)
+            team = compute_team_totals(aggregate_by_user(records))
             
             # Create sheet with sanitized name (Excel sheet name limit: 31 chars)
             sheet_name = project_name[:31] if len(project_name) <= 31 else project_name[:28] + "..."
@@ -669,26 +687,46 @@ class StatisticsGenerator:
                     round(record.get("total_hours", 0.0), 2),
                     round(record.get("normal_overtime", 0.0), 2),
                     round(record.get("weekend_overtime", 0.0), 2),
+                    round(record.get(HOURS_SHARE_PCT, 0.0), 2),
+                    round(record.get(OVERTIME_SHARE_PCT, 0.0), 2),
                 ])
             
-            # Add summary row
+            # Add summary rows (TOTAL + TEAM AVG) using per-user aggregates
             if records:
                 summary_row = len(records) + 2
+
                 sheet.cell(row=summary_row, column=1, value="TOTAL").font = Font(bold=True)
                 sheet.cell(row=summary_row, column=4, value=round(
-                    sum(r.get("total_hours", 0.0) for r in records), 2
+                    team["team_total_hours"], 2
                 )).font = Font(bold=True)
                 sheet.cell(row=summary_row, column=5, value=round(
-                    sum(r.get("normal_overtime", 0.0) for r in records), 2
+                    team["team_normal_overtime"], 2
                 )).font = Font(bold=True)
                 sheet.cell(row=summary_row, column=6, value=round(
-                    sum(r.get("weekend_overtime", 0.0) for r in records), 2
+                    team["team_weekend_overtime"], 2
                 )).font = Font(bold=True)
+                sheet.cell(row=summary_row, column=7, value=100.0).font = Font(bold=True)
+                sheet.cell(row=summary_row, column=8, value=100.0).font = Font(bold=True)
+
+                team_avg_row = summary_row + 1
+                sheet.cell(row=team_avg_row, column=1, value="TEAM AVG").font = Font(bold=True)
+                sheet.cell(row=team_avg_row, column=4, value=round(
+                    team["avg_hours_per_user"], 2
+                )).font = Font(bold=True)
+                sheet.cell(row=team_avg_row, column=5, value=round(
+                    team["avg_normal_ot_per_user"], 2
+                )).font = Font(bold=True)
+                sheet.cell(row=team_avg_row, column=6, value=round(
+                    team["avg_weekend_ot_per_user"], 2
+                )).font = Font(bold=True)
+                sheet.cell(row=team_avg_row, column=7, value="—")
+                sheet.cell(row=team_avg_row, column=8, value="—")
                 
+                info_row = team_avg_row + 1
+
                 # Add project info if provided
                 if project_info and project_name in project_info:
                     info = project_info[project_name]
-                    info_row = summary_row + 1
                     
                     # Calculate first and last entry dates from all records
                     first_entry_dates = [r.get("first_entry") for r in records if r.get("first_entry")]
@@ -713,9 +751,23 @@ class StatisticsGenerator:
                     if project_last_entry:
                         sheet.cell(row=info_row, column=1, value="Project last entry:").font = Font(italic=True)
                         sheet.cell(row=info_row, column=2, value=project_last_entry.isoformat())
-            
+                        info_row += 1
+
+                legend_start = info_row
+                for i, line in enumerate(KPI_LEGEND_LINES):
+                    row = legend_start + i
+                    sheet.merge_cells(
+                        start_row=row,
+                        start_column=1,
+                        end_row=row,
+                        end_column=ncols,
+                    )
+                    cell = sheet.cell(row=row, column=1, value=line)
+                    cell.font = Font(italic=True)
+                    cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+
             # Auto-size columns (30% wider)
-            for column_idx in range(1, len(headers) + 1):
+            for column_idx in range(1, ncols + 1):
                 column_letter = get_column_letter(column_idx)
                 max_length = 0
                 for cell in sheet[column_letter]:

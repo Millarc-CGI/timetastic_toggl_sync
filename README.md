@@ -219,6 +219,15 @@ python -m src.cli report-project-stats --project-name "Project 1" --project-name
 python -m src.cli report-project-stats --project-name "Project Name" --start-date 2025-10-01 --end-date 2025-12-31 --target production --send
 ```
 
+The exported XLSX includes **KPI columns by default** (no extra flag):
+
+| Column | Description |
+|--------|-------------|
+| **Hours share %** | Each user’s hours on the project as a percentage of the team’s total hours in the report window. |
+| **Overtime share %** | Each user’s overtime (normal + weekend) as a percentage of the team’s total overtime on that project. |
+
+Summary rows **TOTAL** (team sums; % columns show 100%) and **TEAM AVG** (averages per user; headcount = users with `total_hours > 0`) plus a short English legend appear below the table. **`--send`** uploads the **same** workbook to Slack; there is no separate KPI-only attachment.
+
 **Additional Commands:**
 ```bash
 # Send admin report to admins via Slack (requires generated admin report)
@@ -272,8 +281,8 @@ python -m src.tests.timetastic_test
 - Cost estimation (if hourly rates configured)
 - Project efficiency metrics
 - Monthly project statistics with project overtime (`--target production`)
-- Project-specific statistics with project overtime (`report-project-stats --target production`)
-- Automatic Slack delivery via `--send` flag with `--target production`
+- Project-specific statistics with project overtime and team KPI columns (`report-project-stats --target production`)
+- Automatic Slack delivery via `--send` flag with `--target production` (same file as saved locally, including KPI)
 
 ### Admin Reports
 - Complete organizational overview with all user statistics

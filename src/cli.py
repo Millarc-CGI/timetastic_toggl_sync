@@ -14,6 +14,7 @@ from .config import load_settings
 from .services import TogglService, TimetasticService, SlackService, UserService
 from .storage import SQLiteStorage, FileStorage
 from .logic import DataAggregator, OvertimeCalculator, ReportGenerator, StatisticsGenerator
+from .logic.kpi_calculator import enrich_project_stat_rows
 from .access_control import PermissionManager
 from .models.user import User
 from .models.project import Project
@@ -1538,7 +1539,8 @@ def report_project_stats(
                     stat['last_entry'] = user_entry_dates[user_email]['last_entry']
             
             if project_stats:
-                projects_data[project_name_display] = project_stats
+                enriched_rows, _ = enrich_project_stat_rows(project_stats)
+                projects_data[project_name_display] = enriched_rows
                 # Store project info
                 project_info[project_name_display] = {
                     'start_date': project.start_date,
