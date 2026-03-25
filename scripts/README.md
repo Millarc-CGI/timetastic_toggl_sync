@@ -60,3 +60,7 @@ python -m venv .
 ```
 
 Only `Scripts`, `Lib`, and `pyvenv.cfg` are removed. Project folders stay.
+
+## Dev Python scripts
+
+- **export_user_holidays_xlsx.py** – export Timetastic holidays for a user/date range to XLSX. Run from project root: `python scripts/export_user_holidays_xlsx.py` (see file docstring for options).

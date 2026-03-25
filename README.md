@@ -37,8 +37,8 @@ src/
 │   ├── overtime_calculator.py # Overtime calculations
 │   ├── statistics_generator.py # Analytics generation
 │   ├── report_generator.py # Report creation
-│   ├── date_ranges.py     # Timezone-aware date helpers
-│   └── tests/             # Unit tests (pytest) and dev scripts
+│   └── date_ranges.py     # Timezone-aware date helpers
+├── tests/                 # Pytest unit tests (test_*.py) and debug/smoke scripts
 ├── access_control/        # Role-based permissions
 │   └── permissions.py     # Access control logic
 ```
@@ -215,7 +215,16 @@ python -m src.cli report-project-stats --project-name "Project 1" --project-name
 
 # Generate statistics with custom date range
 python -m src.cli report-project-stats --project-name "Project Name" --start-date 2025-10-01 --end-date 2025-12-31 --target production --send
+
+# Include inactive projects, but list only those created (or start_date) in range
+python -m src.cli report-project-stats --include-inactive --start-date 2024-01-01 --end-date 2025-12-31
 ```
+
+When `--start-date` is provided, the same date window is used for both:
+- filtering the project list (interactive or token-based) to projects whose **created_at** (date) falls in the range, or **start_date** if `created_at` is missing; projects with neither are omitted from the list,
+- calculating the generated report (time entries are still loaded normally for the selected projects).
+
+The interactive list shows **created** and **start** dates per project line.
 
 The exported XLSX includes **KPI columns by default** (no extra flag):
 

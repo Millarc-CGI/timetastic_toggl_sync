@@ -1192,6 +1192,47 @@ def _projects_from_selection_tokens(available_projects: List[Project], tokens: L
     return out
 
 
+def _project_effective_creation_date(project: Project) -> Optional[date]:
+    """Date used for list filtering: created_at, else start_date, else None (excluded)."""
+    if project.created_at:
+        return project.created_at.date()
+    if project.start_date:
+        return project.start_date
+    return None
+
+
+def _filter_projects_by_created_at_window(
+    available_projects: List[Project],
+    start_date: date,
+    end_date: date,
+) -> tuple[List[Project], Dict[str, int]]:
+    """
+    Keep projects whose effective creation date falls in [start_date, end_date].
+
+    Effective date: created_at (date part), else project.start_date; projects with
+    neither are dropped from the filtered list.
+    """
+    stats: Dict[str, int] = {
+        "projects_total": len(available_projects),
+        "projects_in_range": 0,
+        "projects_no_date": 0,
+    }
+    if not available_projects:
+        return [], stats
+
+    filtered: List[Project] = []
+    for project in available_projects:
+        eff = _project_effective_creation_date(project)
+        if eff is None:
+            stats["projects_no_date"] += 1
+            continue
+        if start_date <= eff <= end_date:
+            filtered.append(project)
+
+    stats["projects_in_range"] = len(filtered)
+    return filtered, stats
+
+
 def _ensure_project_cache(
     settings,
     toggl_service: TogglService,
@@ -1237,7 +1278,14 @@ def _ensure_project_cache(
     multiple=True,
     help="Project name(s) or glob pattern (e.g. xiaomi*). Quote * in the shell. Repeatable.",
 )
-@click.option("--start-date", help="Start date (YYYY-MM-DD, defaults to project first tracking date)")
+@click.option(
+    "--start-date",
+    help=(
+        "Start date (YYYY-MM-DD). When provided, project list is filtered by "
+        "created_at (date) or else project start_date within this range; "
+        "report start per project is max(start-date, first tracking date)."
+    ),
+)
 @click.option("--end-date", help="End date (YYYY-MM-DD, defaults to today)")
 @click.option("--target", type=click.Choice(['production']), default='production',
               help="Target: production (project stats for producers)")
@@ -1273,6 +1321,27 @@ def report_project_stats(
         storage = SQLiteStorage(settings)
         toggl_service = TogglService(settings, storage=storage)
         timetastic_service = TimetasticService(settings, storage=storage)
+
+        # Parse dates early: the same range filters project list and drives report calculations.
+        end_date_obj = date.today()
+        if end_date:
+            try:
+                end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
+            except ValueError:
+                print(f"❌ Invalid end date format: {end_date}. Use YYYY-MM-DD")
+                return
+
+        start_date_obj_input: Optional[date] = None
+        if start_date:
+            try:
+                start_date_obj_input = datetime.strptime(start_date, "%Y-%m-%d").date()
+            except ValueError:
+                print(f"❌ Invalid start date format: {start_date}. Use YYYY-MM-DD")
+                return
+
+        if start_date_obj_input and start_date_obj_input > end_date_obj:
+            print(f"❌ Invalid date range: start-date {start_date} is after end-date {end_date_obj.isoformat()}")
+            return
         
         if refresh_projects:
             print("🔄 Refreshing project list from Toggl (bypassing cache)...")
@@ -1285,6 +1354,26 @@ def report_project_stats(
             scope = "projects" if include_inactive else "active projects"
             print(f"❌ No {scope} found")
             return
+
+        if start_date_obj_input:
+            print(
+                f"🔎 Filtering project list by created_at / start_date window: "
+                f"{start_date_obj_input.isoformat()} .. {end_date_obj.isoformat()}"
+            )
+            before_count = len(available_projects)
+            available_projects, list_stats = _filter_projects_by_created_at_window(
+                available_projects=available_projects,
+                start_date=start_date_obj_input,
+                end_date=end_date_obj,
+            )
+            print(
+                "   📚 Projects in range (created_at or start_date): "
+                f"{list_stats['projects_in_range']}/{before_count} "
+                f"(skipped without date: {list_stats['projects_no_date']})"
+            )
+            if not available_projects:
+                print("❌ No projects found in the selected date range (by metadata)")
+                return
         
         # Select projects
         selected_projects: List[Project] = []
@@ -1296,7 +1385,12 @@ def report_project_stats(
             print(f"\n📋 {label}")
             for idx, proj in enumerate(available_projects, start=1):
                 status = "" if proj.active else " — inactive"
-                print(f"   {idx}. {proj.name} (ID: {proj.project_id}){status}")
+                created_s = proj.created_at.date().isoformat() if proj.created_at else "—"
+                start_s = proj.start_date.isoformat() if proj.start_date else "—"
+                print(
+                    f"   {idx}. {proj.name} (ID: {proj.project_id}){status} "
+                    f"— created: {created_s}, start: {start_s}"
+                )
             
             response = input(
                 "\nEnter numbers, names, or glob patterns like xiaomi* (comma-separated), or 'all': "
@@ -1323,15 +1417,6 @@ def report_project_stats(
         print(f"\n✅ Selected {len(selected_projects)} project(s):")
         for proj in selected_projects:
             print(f"   • {proj.name}")
-        
-        # Parse dates
-        end_date_obj = date.today()
-        if end_date:
-            try:
-                end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").date()
-            except ValueError:
-                print(f"❌ Invalid end date format: {end_date}. Use YYYY-MM-DD")
-                return
         
         # Get users
         users = storage.get_all_users()
@@ -1375,13 +1460,8 @@ def report_project_stats(
             
             # Determine date range
             start_date_obj = first_tracking_date
-            if start_date:
-                try:
-                    user_start = datetime.strptime(start_date, "%Y-%m-%d").date()
-                    if user_start > first_tracking_date:
-                        start_date_obj = user_start
-                except ValueError:
-                    pass
+            if start_date_obj_input and start_date_obj_input > first_tracking_date:
+                start_date_obj = start_date_obj_input
             
             if start_date_obj > end_date_obj:
                 continue
