@@ -24,6 +24,7 @@ timetastic_toggl_sync.code-workspace
 
 # Secrets
 .env
+.tar
 
 # Test files
 tests/
