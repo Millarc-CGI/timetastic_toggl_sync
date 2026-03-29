@@ -17,12 +17,14 @@ The system is built with a modular architecture:
 
 ```
 src/
+├── main.py                # Application entry point
 ├── config.py              # Configuration management
 ├── cli.py                 # Command-line interface
 ├── models/                # Data models
 │   ├── user.py            # User mappings across services
 │   ├── time_entry.py      # Toggl time entries
 │   ├── absence.py         # Timetastic absences
+│   ├── project.py         # Toggl project metadata
 │   └── report.py          # Report data structures
 ├── services/              # External API integrations
 │   ├── toggl_service.py   # Toggl Track API
@@ -36,11 +38,13 @@ src/
 │   ├── data_aggregator.py # Data merging and processing
 │   ├── overtime_calculator.py # Overtime calculations
 │   ├── statistics_generator.py # Analytics generation
+│   ├── kpi_calculator.py  # KPI calculations
 │   ├── report_generator.py # Report creation
-│   └── date_ranges.py     # Timezone-aware date helpers
-├── tests/                 # Pytest unit tests (test_*.py) and debug/smoke scripts
-├── access_control/        # Role-based permissions
-│   └── permissions.py     # Access control logic
+│   ├── date_ranges.py     # Timezone-aware date helpers
+│   └── tests/             # Ad-hoc logic utilities (e.g. export helpers)
+├── tests/                 # Pytest tests (*_test.py) and debug scripts
+└── access_control/        # Role-based permissions
+    └── permissions.py     # Access control logic
 ```
 
 ## 🚀 Features
