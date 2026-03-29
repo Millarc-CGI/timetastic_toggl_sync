@@ -53,7 +53,7 @@ If venv was copied or the user path changed, `pip.exe` may have a hardcoded wron
 To repair venv without touching projects:
 
 ```powershell
-cd C:\Users\hanna.kachurouskaya\Documents\venv
+cd ....
 Remove-Item -Recurse -Force Scripts, Lib, pyvenv.cfg
 python -m venv .
 .\Scripts\python.exe -m pip install -r timetastic_toggl_sync\requirements.txt
