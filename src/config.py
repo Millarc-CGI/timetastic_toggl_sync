@@ -72,30 +72,21 @@ class Settings:
     slack_default_sender_name: str
     slack_dm_fallback_channel: str
     slack_org_email_domain: str
-    refresh_day_of_week: str
-    refresh_time: str
     slack_signing_secret: str
     
     # Access Control
     admin_emails: Set[str]
     producer_emails: Set[str]
     excluded_admin_emails: Set[str]  # Admins excluded from receiving admin reports
-    run_token: str
     email_aliases: Dict[str, str]  # Maps alternative emails to canonical email
     
     # Notification Settings
     send_monthly_reports: bool
-    send_admin_notifications: bool
     excluded_report_emails: Set[str]
     included_report_emails: Set[str]
     
-    # Logging
-    log_level: str
-    log_file: Optional[str]
-    
     # Testing (Optional)
     slack_test_user_id: Optional[str]
-    slack_test_email: Optional[str]
     toggl_test_start_date: Optional[str]
     toggl_test_end_date: Optional[str]
     toggl_test_user_id: Optional[str]
@@ -148,32 +139,23 @@ def load_settings() -> Settings:
         slack_default_sender_name=os.getenv("SLACK_DEFAULT_SENDER_NAME", "MillarcAI").strip(),
         slack_dm_fallback_channel=os.getenv("SLACK_DM_FALLBACK_CHANNEL", "general").strip(),
         slack_org_email_domain=os.getenv("SLACK_ORG_EMAIL_DOMAIN", "millarcgroup.slack.com").strip(),
-        refresh_day_of_week=os.getenv("REFRESH_DAY_OF_WEEK", "Monday").strip(),
-        refresh_time=os.getenv("REFRESH_TIME", "08:00").strip(),
         slack_signing_secret=os.getenv("SLACK_SIGNING_SECRET", "").strip(), 
         # Access Control
         admin_emails=_split_csv_set(os.getenv("ADMIN_EMAILS", "")),
         producer_emails=_split_csv_set(os.getenv("PRODUCER_EMAILS", "")),
         excluded_admin_emails=_split_csv_set(os.getenv("EXCLUDED_ADMIN_EMAILS", "")),
-        run_token=os.getenv("RUN_TOKEN", "").strip(),
         # Email aliases: maps alternative emails to canonical email (normalized to lowercase)
         email_aliases={k.lower().strip(): v.lower().strip() for k, v in (_parse_json(os.getenv("EMAIL_ALIASES", "{}"), {}) or {}).items()},
         
         # Notification Settings
         send_monthly_reports=os.getenv("SEND_MONTHLY_REPORTS", "true").lower() == "true",
-        send_admin_notifications=os.getenv("SEND_ADMIN_NOTIFICATIONS", "true").lower() == "true",
         excluded_report_emails=_split_csv_set(os.getenv("EXCLUDED_REPORT_EMAILS", "")),
         included_report_emails=_split_csv_set(
             os.getenv("INCLUDED_REPORT_EMAILS", os.getenv("INCLUDED_REPORT_EMAIL", ""))
         ),
         
-        # Logging
-        log_level=os.getenv("LOG_LEVEL", "INFO").strip(),
-        log_file=(os.getenv("LOG_FILE", "").strip() or None),
-        
         # Testing (Optional)
         slack_test_user_id=(os.getenv("SLACK_TEST_USER_ID", "").strip() or None),
-        slack_test_email=(os.getenv("SLACK_TEST_EMAIL", "").strip() or None),
         toggl_test_start_date=(os.getenv("TOGGL_TEST_START_DATE", "").strip() or None),
         toggl_test_end_date=(os.getenv("TOGGL_TEST_END_DATE", "").strip() or None),
         toggl_test_user_id=(os.getenv("TOGGL_TEST_USER_ID", "").strip() or None),
