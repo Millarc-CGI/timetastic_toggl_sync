@@ -40,22 +40,22 @@ async def project_handler(req: Request):
 
     user_id = form.get("user_id")
     if not user_id:
-        return {"response_type": "ephemeral", "text": "❌ Nie udało się zweryfikować użytkownika Slack."}
+        return {"response_type": "ephemeral", "text": "❌ Couldn't verify the Slack user."}
 
     slack_user = slack_service.get_user_info(user_id)
     user_email = _normalize_email(slack_user.get("profile", {}).get("email", "") if slack_user else "")
     if not user_email:
-        return {"response_type": "ephemeral", "text": "❌ Nie mogę ustalić Twojego e-maila w Slacku. Skontaktuj się z administratorem."}
+        return {"response_type": "ephemeral", "text": "❌ I couldn't find your email in Slack. Contact the administrator."}
 
     if not (settings.is_producer(user_email) or settings.is_admin(user_email)):
-        return {"response_type": "ephemeral", "text": "⛔ Nie masz uprawnień do uruchamiania komendy"}
+        return {"response_type": "ephemeral", "text": "⛔ You don't have permission to run this command"}
 
     project_name = (form.get("text") or "").strip()
 
     if not project_name:
-        return {"response_type": "ephemeral", "text": "❌ Podaj nazwę projektu po komendzie, np. `/project Project ABC`"}
+        return {"response_type": "ephemeral", "text": "❌ Provide the project name after the command, e.g. `/project Project ABC`"}
 
-    # Fire-and-forget: uruchom report-project-stats --project-name <name> --target production --send
+    # Fire-and-forget: run report-project-stats --project-name <name> --target production --send
     def _run_report(project_name: str):
         try:
             repo_root = Path(__file__).resolve().parent.parent
@@ -78,5 +78,5 @@ async def project_handler(req: Request):
 
     return {
         "response_type": "ephemeral",
-        "text": f"✅ Uruchomiono report-project-stats --project-name \"{project_name}\" --target production --send"
+        "text": f"✅ Ran report-project-stats --project-name \"{project_name}\" --target production --send"
     }
