@@ -15,37 +15,6 @@ A comprehensive integrator for **Toggl Track** (time tracking) + **Timetastic** 
 
 The system is built with a modular architecture:
 
-```
-src/
-├── main.py                # Application entry point
-├── config.py              # Configuration management
-├── cli.py                 # Command-line interface
-├── models/                # Data models
-│   ├── user.py            # User mappings across services
-│   ├── time_entry.py      # Toggl time entries
-│   ├── absence.py         # Timetastic absences
-│   ├── project.py         # Toggl project metadata
-│   └── report.py          # Report data structures
-├── services/              # External API integrations
-│   ├── toggl_service.py   # Toggl Track API
-│   ├── timetastic_service.py # Timetastic API
-│   ├── slack_service.py   # Slack notifications
-│   └── user_service.py    # User management
-├── storage/               # Data persistence
-│   ├── sqlite_storage.py  # SQLite database operations
-│   └── file_storage.py    # CSV/JSON exports
-├── logic/                 # Business logic
-│   ├── data_aggregator.py # Data merging and processing
-│   ├── overtime_calculator.py # Overtime calculations
-│   ├── statistics_generator.py # Analytics generation
-│   ├── kpi_calculator.py  # KPI calculations
-│   ├── report_generator.py # Report creation
-│   ├── date_ranges.py     # Timezone-aware date helpers
-│   └── tests/             # Ad-hoc logic utilities (e.g. export helpers)
-├── tests/                 # Pytest tests (*_test.py) and debug scripts
-└── access_control/        # Role-based permissions
-    └── permissions.py     # Access control logic
-```
 
 ## 🚀 Features
 
@@ -110,39 +79,6 @@ src/
 
 Copy `env.example` to `.env` and configure the following:
 
-#### API Configuration
-```env
-TOGGL_BASE_URL=https://api.track.toggl.com/api/v9
-TOGGL_API_TOKEN=your_toggl_api_token
-TIMETASTIC_BASE_URL=https://app.timetastic.co.uk/api
-TIMETASTIC_API_TOKEN=your_timetastic_api_token
-WORKSPACE_ID=optional_workspace_id
-```
-
-#### Slack Integration
-```env
-SLACK_BOT_TOKEN=xoxb-your-slack-bot-token
-SLACK_DEFAULT_SENDER_NAME=
-SLACK_DM_FALLBACK_CHANNEL=general
-SLACK_ORG_EMAIL_DOMAIN=yourcompany.slack.com
-```
-
-#### Working Hours & Overtime Rules
-```env
-DEFAULT_WORKING_HOURS_DAILY=8
-# Overtime calculation uses simple 8h/day thresholds
-```
-
-#### Access Control
-```env
-ADMIN_EMAILS=admin@company.com,hr@company.com
-PRODUCER_EMAILS=producer1@company.com,producer2@company.com
-```
-
-#### Absence Rules
-```env
-# Absence rules will be implemented in logic/ folder
-```
 
 ## 🖥️ Usage
 
@@ -229,15 +165,6 @@ When `--start-date` is provided, the same date window is used for both:
 - calculating the generated report (time entries are still loaded normally for the selected projects).
 
 The interactive list shows **created** and **start** dates per project line.
-
-The exported XLSX includes **KPI columns by default** (no extra flag):
-
-| Column | Description |
-|--------|-------------|
-| **Hours share %** | Each user’s hours on the project as a percentage of the team’s total hours in the report window. |
-| **Overtime share %** | Each user’s overtime (normal + weekend) as a percentage of the team’s total overtime on that project. |
-
-Summary rows **TOTAL** (team sums; % columns show 100%) and **TEAM AVG** (averages per user; headcount = users with `total_hours > 0`) plus a short English legend appear below the table. **`--send`** uploads the **same** workbook to Slack; there is no separate KPI-only attachment.
 
 **Additional Commands:**
 ```bash
@@ -351,114 +278,12 @@ Set up automated daily synchronization using cron (Linux/Mac):
 python -m src.cli report-monthly --target all --select-month 2024-11
 ```
 
-## 🗄️ Data Storage
-
-### SQLite Database
-- **Location**: `./data/sync.db` (configurable)
-- **Tables**: users, time_entries, absences, sync_log, monthly_reports
-- **Features**: Automatic cleanup of old data, comprehensive indexing
-- **Retention:** `refresh-cache` runs cleanup before sync (default: delete data older than 18 months). Use `refresh-cache --retention-months 0` to disable.
-
-### File Exports
-- **Location**: `./exports/YYYY-MM/` (configurable)
-- **Formats**: XLSX (formatted reports), JSON (raw data backup)
-- **Organization**: Role-based file naming and directory structure
-- **Features**: Formatted tables, wide columns, frozen headers, color-coded headers
-- Combined user workbook available as `user_combined_database_YYYY-MM.xlsx` (arkusze per user).
-
-### Backup
-
-**Local backup** (current setup): Use `scripts/backup_db.py` directly or `scripts/run_backup.ps1` (PowerShell wrapper with logging). Creates SQLite copy + SHA256 checksum + SQL dump in `./backups/` with 90-day retention. Scheduled via Task Scheduler (`tts_backup`, Monday 02:00).
-
-**GitHub Actions** (`.github/workflows/backup.yml`): Prepared for future use when the project runs on NAS or cloud. Not used with local setup – the workflow has no access to the local SQLite database.
-
-## 🔧 Customization
-
-### Overtime Rules
-Simple overtime calculation is implemented:
-- Daily: 8 hours threshold
-
-
-### Absence Rules
-Customize how different absence types are handled:
-
-```env
-# Absence rules will be implemented in logic/ folder
-```
-
-### Notification Settings
-```env
-SLACK_NOTIFICATION_DAY=Friday
-SLACK_NOTIFICATION_TIME=09:00
-SEND_MONTHLY_REPORTS=true
-EXCLUDED_REPORT_EMAILS=
-SEND_ADMIN_NOTIFICATIONS=true
-REFRESH_DAY_OF_WEEK=Monday
-REFRESH_TIME=03:00
-```
-
-## 🚀 Future Plans
-
-### Web Application
-When ready for a web interface, the recommended tech stack is:
-- **Backend**: FastAPI (Python-based, familiar, auto-docs)
-- **Frontend**: React/Vue or Streamlit (simple Python-based UI)
-- **Database**: PostgreSQL (for production scalability)
-- **Authentication**: OAuth2 with Slack/Google login
-- **Deployment**: Docker containers on NAS or cloud
-
-### Enhanced Features
-- Real-time dashboards
-- Advanced analytics and forecasting
-- Integration with payroll systems
-- Mobile app for time entry
-- Advanced reporting with charts and graphs
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-1. **API Connection Errors**:
-   - Verify API tokens are correct
-   - Check network connectivity
-   - Ensure API endpoints are accessible
-
-2. **User Mapping Issues**:
-   - Run `sync-users` to update mappings
-   - Verify email addresses match across services
-   - Check user permissions in each service
-
-3. **Slack Notification Failures**:
-   - Verify bot token and permissions
-   - Check if users are in the workspace
-   - Test connections with `ping` command
-
-4. **Report Generation Errors**:
-   - Ensure data is synced first
-   - Check date ranges and user existence
-   - Verify file system permissions
-
 ### Logging
 The system provides comprehensive logging:
 - Database operations
 - API calls and responses
 - Error tracking and debugging
 - Sync history and statistics
-
-## 📄 License
-
-[Add your license information here]
-
-## 🤝 Contributing
-
-[Add contribution guidelines here]
-
-## 📞 Support
-
-For support and questions:
-- Check the troubleshooting section
-- Review the configuration documentation
-- Check system logs for detailed error information
 
 
 [![CI Status](https://github.com/Millarc-CGI/timetastic_toggl_sync/actions/workflows/ci.yml/badge.svg)](https://github.com/Millarc-CGI/timetastic_toggl_sync/actions)
